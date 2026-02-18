@@ -33,7 +33,7 @@ Everything runs client-side in your browser. No server processing is required.
 - N-gram analysis
 - Duplicate sentence/paragraph finder
 - Readability metrics
-- Regex batch find/replace
+- Regex batch find/replace + batch extractor (capture groups)
 - Lorem ipsum generator
 
 ### Converters

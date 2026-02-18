@@ -13,7 +13,7 @@ import { computeWordFreq, type WordFreqOptions } from './wordFreq'
 import { computeNgrams } from './ngrams'
 import { findDuplicateSentences, findDuplicateParagraphs } from './dedup'
 import { analyzeReadability } from './readability'
-import { applyPatterns, type RegexPattern } from './regexTool'
+import { applyPatterns, extractMatches, type RegexExtractMatch, type RegexPattern } from './regexTool'
 import { useI18n } from '@/lib/i18n'
 import { faker } from '@faker-js/faker'
 import Papa from 'papaparse'
@@ -287,16 +287,56 @@ function ReadabilityTab() {
 
 let regexIdCounter = 1
 
+const REGEX_EXTRACT_PRESETS: Array<{ label: string; pattern: string; flags: string }> = [
+  { label: 'Email', pattern: '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}', flags: 'gi' },
+  { label: 'URL', pattern: 'https?:\\/\\/[^\\s"\'<>]+', flags: 'gi' },
+  { label: 'Hashtag', pattern: '#([A-Za-z0-9_]+)', flags: 'g' },
+  { label: 'Phone', pattern: '\\+?\\d[\\d\\s().-]{6,}\\d', flags: 'g' },
+  { label: 'ID', pattern: '\\b[A-Z]{2,5}-\\d{2,6}\\b', flags: 'g' },
+]
+
+function buildExtractTable(matches: RegexExtractMatch[]) {
+  const groupCount = matches.reduce((max, m) => Math.max(max, m.groups.length), 0)
+  const namedKeys = Array.from(new Set(matches.flatMap((m) => Object.keys(m.namedGroups))))
+
+  const rows = matches.map((m) => {
+    const row: Record<string, string | number> = {
+      index: m.index,
+      match: m.match,
+    }
+
+    for (let i = 0; i < groupCount; i++) {
+      row[`Group${i + 1}`] = m.groups[i] ?? ''
+    }
+    for (const key of namedKeys) {
+      row[`name:${key}`] = m.namedGroups[key] ?? ''
+    }
+    return row
+  })
+
+  return { rows, groupCount, namedKeys }
+}
+
 function RegexTab() {
   const { t } = useI18n()
   const [text, setText] = useState('')
+  const [mode, setMode] = useState<'replace' | 'extract'>('replace')
+
+  // Find / Replace mode
   const [patterns, setPatterns] = useState<RegexPattern[]>([
     { id: String(regexIdCounter++), find: '', replace: '', flags: 'g' },
   ])
   const [result, setResult] = useState('')
-  const [matches, setMatches] = useState<{ line: number; original: string; replaced: string }[]>([])
+  const [replaceMatches, setReplaceMatches] = useState<{ line: number; original: string; replaced: string }[]>([])
   const [errors, setErrors] = useState<string[]>([])
   const [copied, setCopied] = useState(false)
+
+  // Extract mode
+  const [extractPattern, setExtractPattern] = useState('')
+  const [extractFlags, setExtractFlags] = useState('g')
+  const [extractResults, setExtractResults] = useState<RegexExtractMatch[]>([])
+  const [extractError, setExtractError] = useState('')
+  const [extractRan, setExtractRan] = useState(false)
 
   const addPattern = () => {
     setPatterns((prev) => [...prev, { id: String(regexIdCounter++), find: '', replace: '', flags: 'g' }])
@@ -311,16 +351,42 @@ function RegexTab() {
   }
 
   const run = () => {
-    const r = applyPatterns(text, patterns)
-    setResult(r.result)
-    setMatches(r.matches)
-    setErrors(r.errors)
+    if (mode === 'replace') {
+      const r = applyPatterns(text, patterns)
+      setResult(r.result)
+      setReplaceMatches(r.matches)
+      setErrors(r.errors)
+      return
+    }
+
+    const r = extractMatches(text, extractPattern, extractFlags)
+    setExtractRan(true)
+    setExtractFlags(r.normalizedFlags || extractFlags)
+    if (r.error) {
+      setExtractError(r.error)
+      setExtractResults([])
+    } else {
+      setExtractError('')
+      setExtractResults(r.matches)
+    }
   }
 
   const copy = async () => {
     await copyToClipboard(result)
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
+  }
+
+  const extractTable = buildExtractTable(extractResults)
+
+  const exportExtractJSON = () => {
+    const json = JSON.stringify(extractResults, null, 2)
+    downloadFile(json, 'regex-extract.json', 'application/json')
+  }
+
+  const exportExtractCSV = () => {
+    const csv = Papa.unparse(extractTable.rows)
+    downloadFile(csv, 'regex-extract.csv', 'text/csv')
   }
 
   return (
@@ -330,37 +396,12 @@ function RegexTab() {
         <CardDescription>{t('tt.regex.desc')}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Patterns */}
-        <div className="space-y-2">
-          <Label>{t('tt.regex.patterns')}</Label>
-          {patterns.map((pat) => (
-            <div key={pat.id} className="flex items-center gap-2">
-              <Input
-                className="h-8 flex-1 font-mono text-xs"
-                placeholder={t('tt.regex.find')}
-                value={pat.find}
-                onChange={(e) => updatePattern(pat.id, { find: e.target.value })}
-              />
-              <span className="text-muted-foreground text-sm">→</span>
-              <Input
-                className="h-8 flex-1 font-mono text-xs"
-                placeholder={t('tt.regex.replace')}
-                value={pat.replace}
-                onChange={(e) => updatePattern(pat.id, { replace: e.target.value })}
-              />
-              <Input
-                className="h-8 w-16 font-mono text-xs"
-                placeholder="flags"
-                value={pat.flags}
-                onChange={(e) => updatePattern(pat.id, { flags: e.target.value })}
-              />
-              <button onClick={() => removePattern(pat.id)} className="text-muted-foreground hover:text-destructive">
-                <Trash2 className="h-4 w-4" />
-              </button>
-            </div>
-          ))}
-          <Button variant="outline" size="sm" onClick={addPattern}>
-            <Plus className="mr-1 h-3 w-3" /> {t('tt.regex.addPattern')}
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant={mode === 'replace' ? 'default' : 'outline'} onClick={() => setMode('replace')}>
+            Find / Replace
+          </Button>
+          <Button size="sm" variant={mode === 'extract' ? 'default' : 'outline'} onClick={() => setMode('extract')}>
+            Extract
           </Button>
         </div>
 
@@ -369,21 +410,96 @@ function RegexTab() {
           <Textarea className="font-mono text-xs h-32" value={text} onChange={(e) => setText(e.target.value)} placeholder={t('common.pasteHere')} />
         </div>
 
-        <Button size="sm" onClick={run}>{t('common.run')}</Button>
+        {mode === 'replace' && (
+          <div className="space-y-2">
+            <Label>{t('tt.regex.patterns')}</Label>
+            {patterns.map((pat) => (
+              <div key={pat.id} className="flex items-center gap-2">
+                <Input
+                  className="h-8 flex-1 font-mono text-xs"
+                  placeholder={t('tt.regex.find')}
+                  value={pat.find}
+                  onChange={(e) => updatePattern(pat.id, { find: e.target.value })}
+                />
+                <span className="text-muted-foreground text-sm">-{'>'}</span>
+                <Input
+                  className="h-8 flex-1 font-mono text-xs"
+                  placeholder={t('tt.regex.replace')}
+                  value={pat.replace}
+                  onChange={(e) => updatePattern(pat.id, { replace: e.target.value })}
+                />
+                <Input
+                  className="h-8 w-16 font-mono text-xs"
+                  placeholder="flags"
+                  value={pat.flags}
+                  onChange={(e) => updatePattern(pat.id, { flags: e.target.value })}
+                />
+                <button onClick={() => removePattern(pat.id)} className="text-muted-foreground hover:text-destructive">
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            ))}
+            <Button variant="outline" size="sm" onClick={addPattern}>
+              <Plus className="mr-1 h-3 w-3" /> {t('tt.regex.addPattern')}
+            </Button>
+          </div>
+        )}
 
-        {errors.length > 0 && (
+        {mode === 'extract' && (
+          <div className="space-y-3">
+            <div className="grid gap-2 md:grid-cols-[1fr_96px]">
+              <Input
+                className="h-8 font-mono text-xs"
+                placeholder="Regex pattern"
+                value={extractPattern}
+                onChange={(e) => setExtractPattern(e.target.value)}
+              />
+              <Input
+                className="h-8 font-mono text-xs"
+                placeholder="flags"
+                value={extractFlags}
+                onChange={(e) => setExtractFlags(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {REGEX_EXTRACT_PRESETS.map((preset) => (
+                <Button
+                  key={preset.label}
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setExtractPattern(preset.pattern)
+                    setExtractFlags(preset.flags)
+                  }}
+                >
+                  {preset.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <Button size="sm" onClick={run}>{mode === 'replace' ? t('common.run') : 'Extract'}</Button>
+
+        {mode === 'replace' && errors.length > 0 && (
           <div className="rounded-md bg-destructive/10 border border-destructive/30 p-2 text-xs text-destructive">
             {errors.join('\n')}
           </div>
         )}
 
-        {result && (
+        {mode === 'extract' && extractError && (
+          <div className="rounded-md bg-destructive/10 border border-destructive/30 p-2 text-xs text-destructive font-mono">
+            {extractError}
+          </div>
+        )}
+
+        {mode === 'replace' && result && (
           <div className="space-y-3">
-            {matches.length > 0 && (
+            {replaceMatches.length > 0 && (
               <div>
-                <Badge className="mb-2">{matches.length} {t('tt.regex.modifiedLines')}</Badge>
+                <Badge className="mb-2">{replaceMatches.length} {t('tt.regex.modifiedLines')}</Badge>
                 <div className="max-h-40 overflow-auto space-y-1">
-                  {matches.slice(0, 20).map((m) => (
+                  {replaceMatches.slice(0, 20).map((m) => (
                     <div key={m.line} className="text-xs grid grid-cols-[2rem_1fr_1fr] gap-1">
                       <span className="text-muted-foreground">#{m.line}</span>
                       <span className="line-through text-destructive/70 font-mono truncate">{m.original}</span>
@@ -404,12 +520,63 @@ function RegexTab() {
             </div>
           </div>
         )}
+
+        {mode === 'extract' && (
+          <div className="space-y-3">
+            {extractResults.length > 0 && (
+              <>
+                <div className="flex items-center gap-2">
+                  <Badge>{extractResults.length} matches</Badge>
+                  <Button size="sm" variant="outline" onClick={exportExtractCSV}>
+                    <Download className="mr-1 h-3 w-3" /> CSV
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={exportExtractJSON}>
+                    <Download className="mr-1 h-3 w-3" /> JSON
+                  </Button>
+                </div>
+                <div className="overflow-auto max-h-72 rounded-md border">
+                  <table className="w-full text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b bg-muted/40">
+                        <th className="px-2 py-1.5 text-left">Index</th>
+                        <th className="px-2 py-1.5 text-left">Match</th>
+                        {Array.from({ length: extractTable.groupCount }).map((_, i) => (
+                          <th key={`g-${i}`} className="px-2 py-1.5 text-left">{`Group${i + 1}`}</th>
+                        ))}
+                        {extractTable.namedKeys.map((k) => (
+                          <th key={`n-${k}`} className="px-2 py-1.5 text-left">{`name:${k}`}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {extractResults.slice(0, 300).map((m, idx) => (
+                        <tr key={`${m.index}-${idx}`} className="border-b hover:bg-muted/30">
+                          <td className="px-2 py-1.5 font-mono">{m.index}</td>
+                          <td className="px-2 py-1.5 font-mono">{m.match}</td>
+                          {Array.from({ length: extractTable.groupCount }).map((_, i) => (
+                            <td key={`g-${idx}-${i}`} className="px-2 py-1.5 font-mono">{m.groups[i] ?? ''}</td>
+                          ))}
+                          {extractTable.namedKeys.map((k) => (
+                            <td key={`n-${idx}-${k}`} className="px-2 py-1.5 font-mono">{m.namedGroups[k] ?? ''}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+            {extractRan && !extractError && extractResults.length === 0 && (
+              <p className="text-xs text-muted-foreground">No matches found.</p>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   )
 }
 
-// ─── Lorem Ipsum Generator ───────────────────────────────────────────────────
+// Lorem Ipsum Generator
 
 function LoremTab() {
   const { t } = useI18n()
@@ -502,3 +669,6 @@ function LoremTab() {
     </Card>
   )
 }
+
+
+

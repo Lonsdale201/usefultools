@@ -615,6 +615,11 @@ function LoremTab() {
     setTimeout(() => setCopied(false), 1500)
   }
 
+  const paragraphOutput = output
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+
   return (
     <Card>
       <CardHeader>
@@ -662,7 +667,17 @@ function LoremTab() {
                 {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
               </Button>
             </div>
-            <Textarea className="font-mono text-xs h-48" value={output} readOnly />
+            {mode === 'paragraphs' ? (
+              <div className="max-h-72 overflow-auto rounded-md border bg-background p-4">
+                <div className="space-y-5 text-sm leading-7">
+                  {paragraphOutput.map((p, idx) => (
+                    <p key={idx}>{p}</p>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <Textarea className="font-mono text-xs h-48" value={output} readOnly />
+            )}
           </div>
         )}
       </CardContent>

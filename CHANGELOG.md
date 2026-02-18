@@ -2,7 +2,7 @@
 
 All notable changes to this project are tracked in this file.
 
-## [Unreleased]
+## [1.1] - 2026.02.18
 
 ### Added
 

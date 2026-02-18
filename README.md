@@ -86,7 +86,7 @@ It builds on pushes to `main` and deploys the `dist` output to GitHub Pages.
 
 ## Versioning
 
-Current version: `1.0.0` (`VERSION`)
+Current version: `1.1` (`VERSION`)
 
 Release notes are tracked in:
 `CHANGELOG.md`

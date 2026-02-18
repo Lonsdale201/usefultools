@@ -5,6 +5,7 @@ import { TextToolbox } from './tools/TextToolbox'
 import { Converters } from './tools/Converters'
 import { DiffCompare } from './tools/DiffCompare'
 import { CodeUtils } from './tools/CodeUtils'
+import { EverydayTools } from './tools/EverydayTools'
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
           <Route path="/converters" element={<Converters />} />
           <Route path="/diff-compare" element={<DiffCompare />} />
           <Route path="/code-utils" element={<CodeUtils />} />
+          <Route path="/everyday-tools" element={<EverydayTools />} />
         </Route>
       </Routes>
     </HashRouter>

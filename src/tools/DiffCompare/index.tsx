@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { Copy, Check, Download } from 'lucide-react'
+import Papa from 'papaparse'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -12,10 +14,23 @@ import { copyToClipboard, downloadFile } from '@/lib/downloadFile'
 import { computeDiff, diffStats, type DiffMode } from './textDiff'
 import { diffCSV, type DiffRow } from './csvDiff'
 import { deduplicateList, type DedupOptions } from './listDedup'
+import {
+  countDuplicates,
+  diffLists,
+  parseList,
+  sortLines,
+  uniqueLines,
+  type DuplicateCountRow,
+  type ListDiffResult,
+  type ListTransformOptions,
+  type SortMode,
+  type SortOrder,
+} from './listTool'
 import { useI18n } from '@/lib/i18n'
 
 export function DiffCompare() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
+  const listToolLabel = lang === 'hu' ? 'Lista Eszköz' : 'List Tool'
   return (
     <div className="space-y-4">
       <div>
@@ -27,10 +42,12 @@ export function DiffCompare() {
           <TabsTrigger value="text-diff">{t('dc.textDiff')}</TabsTrigger>
           <TabsTrigger value="csv-diff">{t('dc.csvDiff')}</TabsTrigger>
           <TabsTrigger value="dedup">{t('dc.dedup')}</TabsTrigger>
+          <TabsTrigger value="list-tool">{listToolLabel}</TabsTrigger>
         </TabsList>
         <TabsContent value="text-diff"><TextDiffTab /></TabsContent>
         <TabsContent value="csv-diff"><CsvDiffTab /></TabsContent>
         <TabsContent value="dedup"><DedupTab /></TabsContent>
+        <TabsContent value="list-tool"><ListToolTab /></TabsContent>
       </Tabs>
     </div>
   )
@@ -236,16 +253,16 @@ function DedupTab() {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-1 text-sm">
-            <input type="checkbox" checked={opts.caseInsensitive} onChange={(e) => setOpts({ ...opts, caseInsensitive: e.target.checked })} />
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={opts.caseInsensitive} onCheckedChange={(checked) => setOpts({ ...opts, caseInsensitive: checked === true })} />
             {t('dc.dedup.caseFold')}
           </label>
-          <label className="flex items-center gap-1 text-sm">
-            <input type="checkbox" checked={opts.trim} onChange={(e) => setOpts({ ...opts, trim: e.target.checked })} />
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={opts.trim} onCheckedChange={(checked) => setOpts({ ...opts, trim: checked === true })} />
             {t('dc.dedup.trim')}
           </label>
-          <label className="flex items-center gap-1 text-sm">
-            <input type="checkbox" checked={opts.keepFirst} onChange={(e) => setOpts({ ...opts, keepFirst: e.target.checked })} />
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={opts.keepFirst} onCheckedChange={(checked) => setOpts({ ...opts, keepFirst: checked === true })} />
             {t('dc.dedup.keepFirst')}
           </label>
           <Button size="sm" onClick={run}>{t('dc.dedup.run')}</Button>
@@ -282,6 +299,337 @@ function DedupTab() {
               </div>
               <Textarea className="font-mono text-xs h-48" value={result.unique.join('\n')} readOnly />
             </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function ListToolTab() {
+  const { lang } = useI18n()
+  const ui = lang === 'hu'
+    ? {
+        title: 'Unique / Dedup / Sort Lista Eszköz',
+        desc: 'Egyszerű lista tisztítás + dedup/számlálás/rendezés és kétlista összehasonlítás.',
+        trim: 'levágás (trim)',
+        lowercase: 'kisbetűssé',
+        removeEmpty: 'üres sorok törlése',
+        inputLabel: 'Lista bemenet (soronként 1 elem)',
+        clean: 'tisztítás',
+        unique: 'egyedi',
+        countDuplicates: 'duplikátumok számlálása',
+        sort: 'rendezés',
+        alpha: 'ABC',
+        numeric: 'numerikus',
+        length: 'hossz',
+        asc: 'növekvő',
+        descOrder: 'csökkenő',
+        rows: 'sorok',
+        uniqueRows: 'egyedi sorok',
+        duplicates: 'duplikátumok',
+        value: 'érték',
+        count: 'db',
+        diffTitle: 'Két lista diff (A\\B, B\\A, metszet)',
+        runDiff: 'diff futtatása',
+        listA: 'A lista',
+        listB: 'B lista',
+        intersection: 'metszet',
+        listPlaceholder: 'alma\nkörte\nalma\nbarack',
+        sectionAminusB: 'A\\B',
+        sectionBminusA: 'B\\A',
+        sectionIntersection: 'Metszet',
+      }
+    : {
+        title: 'Unique / Dedup / Sort List Tool',
+        desc: 'Single-list cleanup + dedup/count/sort and two-list diff operations.',
+        trim: 'trim',
+        lowercase: 'lowercase',
+        removeEmpty: 'remove empty',
+        inputLabel: 'List input (one row per line)',
+        clean: 'clean',
+        unique: 'unique',
+        countDuplicates: 'count duplicates',
+        sort: 'sort',
+        alpha: 'ABC',
+        numeric: 'numeric',
+        length: 'length',
+        asc: 'asc',
+        descOrder: 'desc',
+        rows: 'rows',
+        uniqueRows: 'unique rows',
+        duplicates: 'duplicates',
+        value: 'value',
+        count: 'count',
+        diffTitle: 'Diff two lists (A\\B, B\\A, intersection)',
+        runDiff: 'run diff',
+        listA: 'List A',
+        listB: 'List B',
+        intersection: 'intersection',
+        listPlaceholder: 'apple\nbanana\napple\norange',
+        sectionAminusB: 'A\\B',
+        sectionBminusA: 'B\\A',
+        sectionIntersection: 'Intersection',
+      }
+
+  const [input, setInput] = useState('')
+  const [opts, setOpts] = useState<ListTransformOptions>({
+    trim: true,
+    lowercase: false,
+    removeEmpty: true,
+  })
+  const [sortMode, setSortMode] = useState<SortMode>('alpha')
+  const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
+  const [lineOutput, setLineOutput] = useState<string[]>([])
+  const [countOutput, setCountOutput] = useState<DuplicateCountRow[]>([])
+  const [outputMode, setOutputMode] = useState<'lines' | 'counts'>('lines')
+  const [copied, setCopied] = useState(false)
+
+  const [listA, setListA] = useState('')
+  const [listB, setListB] = useState('')
+  const [diffResult, setDiffResult] = useState<ListDiffResult | null>(null)
+  const [diffCopied, setDiffCopied] = useState(false)
+
+  const baseLines = () => parseList(input, opts)
+
+  const runClean = () => {
+    setLineOutput(baseLines())
+    setOutputMode('lines')
+  }
+
+  const runUnique = () => {
+    setLineOutput(uniqueLines(baseLines()))
+    setOutputMode('lines')
+  }
+
+  const runCount = () => {
+    setCountOutput(countDuplicates(baseLines()))
+    setOutputMode('counts')
+  }
+
+  const runSort = () => {
+    setLineOutput(sortLines(baseLines(), sortMode, sortOrder))
+    setOutputMode('lines')
+  }
+
+  const outputText =
+    outputMode === 'counts'
+      ? countOutput.map((r) => `${r.value}\t${r.count}`).join('\n')
+      : lineOutput.join('\n')
+
+  const copyOutput = async () => {
+    await copyToClipboard(outputText)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  const downloadOutputTxt = () => {
+    const name = outputMode === 'counts' ? 'list-duplicate-counts.txt' : 'list-output.txt'
+    downloadFile(outputText, name, 'text/plain')
+  }
+
+  const downloadOutputCsv = () => {
+    const csv = outputMode === 'counts'
+      ? Papa.unparse(countOutput)
+      : Papa.unparse(lineOutput.map((value) => ({ value })))
+    const name = outputMode === 'counts' ? 'list-duplicate-counts.csv' : 'list-output.csv'
+    downloadFile(csv, name, 'text/csv')
+  }
+
+  const runDiff = () => {
+    const a = parseList(listA, opts)
+    const b = parseList(listB, opts)
+    setDiffResult(diffLists(a, b))
+  }
+
+  const diffText = diffResult
+    ? [
+        `[${ui.sectionAminusB}]`,
+        ...diffResult.aMinusB,
+        '',
+        `[${ui.sectionBminusA}]`,
+        ...diffResult.bMinusA,
+        '',
+        `[${ui.sectionIntersection}]`,
+        ...diffResult.intersection,
+      ].join('\n')
+    : ''
+
+  const copyDiff = async () => {
+    if (!diffResult) return
+    await copyToClipboard(diffText)
+    setDiffCopied(true)
+    setTimeout(() => setDiffCopied(false), 1500)
+  }
+
+  const downloadDiffTxt = () => {
+    if (!diffResult) return
+    downloadFile(diffText, 'list-diff.txt', 'text/plain')
+  }
+
+  const downloadDiffCsv = () => {
+    if (!diffResult) return
+    const rows = [
+      ...diffResult.aMinusB.map((value) => ({ section: ui.sectionAminusB, value })),
+      ...diffResult.bMinusA.map((value) => ({ section: ui.sectionBminusA, value })),
+      ...diffResult.intersection.map((value) => ({ section: ui.sectionIntersection, value })),
+    ]
+    downloadFile(Papa.unparse(rows), 'list-diff.csv', 'text/csv')
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{ui.title}</CardTitle>
+        <CardDescription>{ui.desc}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={opts.trim} onCheckedChange={(checked) => setOpts({ ...opts, trim: checked === true })} />
+            {ui.trim}
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={opts.lowercase} onCheckedChange={(checked) => setOpts({ ...opts, lowercase: checked === true })} />
+            {ui.lowercase}
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={opts.removeEmpty} onCheckedChange={(checked) => setOpts({ ...opts, removeEmpty: checked === true })} />
+            {ui.removeEmpty}
+          </label>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label>{ui.inputLabel}</Label>
+          <Textarea
+            className="font-mono text-xs h-40"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={ui.listPlaceholder}
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" onClick={runClean}>{ui.clean}</Button>
+          <Button size="sm" onClick={runUnique}>{ui.unique}</Button>
+          <Button size="sm" onClick={runCount}>{ui.countDuplicates}</Button>
+          <Button size="sm" onClick={runSort}>{ui.sort}</Button>
+          <Select value={sortMode} onValueChange={(v) => setSortMode(v as SortMode)}>
+            <SelectTrigger className="h-8 w-28">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="alpha">{ui.alpha}</SelectItem>
+              <SelectItem value="numeric">{ui.numeric}</SelectItem>
+              <SelectItem value="length">{ui.length}</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={sortOrder} onValueChange={(v) => setSortOrder(v as SortOrder)}>
+            <SelectTrigger className="h-8 w-24">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="asc">{ui.asc}</SelectItem>
+              <SelectItem value="desc">{ui.descOrder}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        {(lineOutput.length > 0 || countOutput.length > 0) && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex gap-2">
+                {outputMode === 'lines' ? (
+                  <Badge variant="secondary">{ui.rows}: {lineOutput.length}</Badge>
+                ) : (
+                  <>
+                    <Badge variant="secondary">{ui.uniqueRows}: {countOutput.length}</Badge>
+                    <Badge variant="outline">
+                      {ui.duplicates}: {countOutput.reduce((sum, r) => sum + r.count, 0) - countOutput.length}
+                    </Badge>
+                  </>
+                )}
+              </div>
+              <div className="flex gap-1">
+                <Button size="sm" variant="ghost" onClick={copyOutput}>
+                  {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={downloadOutputTxt}>
+                  <Download className="h-4 w-4" />
+                  TXT
+                </Button>
+                <Button size="sm" variant="ghost" onClick={downloadOutputCsv}>
+                  <Download className="h-4 w-4" />
+                  CSV
+                </Button>
+              </div>
+            </div>
+
+            {outputMode === 'counts' ? (
+              <div className="max-h-56 overflow-auto rounded-md border">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b bg-muted/40">
+                      <th className="px-2 py-1.5 text-left">{ui.value}</th>
+                      <th className="px-2 py-1.5 text-right">{ui.count}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {countOutput.map((row) => (
+                      <tr key={row.value} className="border-b hover:bg-muted/30">
+                        <td className="px-2 py-1.5 font-mono">{row.value}</td>
+                        <td className="px-2 py-1.5 text-right font-semibold">{row.count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <Textarea className="font-mono text-xs h-40" value={lineOutput.join('\n')} readOnly />
+            )}
+          </div>
+        )}
+
+        <div className="h-px bg-border" />
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <Label>{ui.diffTitle}</Label>
+            <Button size="sm" onClick={runDiff}>{ui.runDiff}</Button>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>{ui.listA}</Label>
+              <Textarea className="font-mono text-xs h-32" value={listA} onChange={(e) => setListA(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>{ui.listB}</Label>
+              <Textarea className="font-mono text-xs h-32" value={listB} onChange={(e) => setListB(e.target.value)} />
+            </div>
+          </div>
+        </div>
+
+        {diffResult && (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="secondary">A\\B: {diffResult.aMinusB.length}</Badge>
+              <Badge variant="secondary">B\\A: {diffResult.bMinusA.length}</Badge>
+              <Badge variant="outline">{ui.intersection}: {diffResult.intersection.length}</Badge>
+              <div className="ml-auto flex gap-1">
+                <Button size="sm" variant="ghost" onClick={copyDiff}>
+                  {diffCopied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={downloadDiffTxt}>
+                  <Download className="h-4 w-4" />
+                  TXT
+                </Button>
+                <Button size="sm" variant="ghost" onClick={downloadDiffCsv}>
+                  <Download className="h-4 w-4" />
+                  CSV
+                </Button>
+              </div>
+            </div>
+            <Textarea className="font-mono text-xs h-44" value={diffText} readOnly />
           </div>
         )}
       </CardContent>

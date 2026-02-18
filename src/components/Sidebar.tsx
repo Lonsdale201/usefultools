@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { Database, FileText, ArrowLeftRight, GitCompare, Code2, Wrench, Globe, ScrollText, X, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Database, FileText, ArrowLeftRight, GitCompare, Code2, Wrench, Globe, ScrollText, X, ChevronLeft, ChevronRight, Calculator } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
@@ -12,11 +12,13 @@ interface ChangelogEntry {
   version: string
   section: string
   text: string
+  details: string[]
 }
 
 const CHANGELOG_PAGE_SIZE = 3
 
 function parseChangelog(markdown: string): ChangelogEntry[] {
+  const normalize = (value: string) => value.replace(/`([^`]+)`/g, '$1').trim()
   const entries: ChangelogEntry[] = []
   const lines = markdown.split(/\r?\n/)
   let currentVersion = 'Unknown'
@@ -39,16 +41,15 @@ function parseChangelog(markdown: string): ChangelogEntry[] {
       continue
     }
 
-    const itemMatch = line.match(/^- (.+)$/)
-    if (itemMatch) {
-      entries.push({ version: currentVersion, section: currentSection, text: itemMatch[1].trim() })
-      continue
-    }
-
-    const nestedItemMatch = line.match(/^\s{2,}- (.+)$/)
-    if (nestedItemMatch && entries.length > 0) {
-      const last = entries[entries.length - 1]
-      last.text = `${last.text}; ${nestedItemMatch[1].trim()}`
+    const bulletMatch = line.match(/^(\s*)- (.+)$/)
+    if (bulletMatch) {
+      const indent = bulletMatch[1].length
+      const text = normalize(bulletMatch[2])
+      if (indent === 0) {
+        entries.push({ version: currentVersion, section: currentSection, text, details: [] })
+      } else if (entries.length > 0) {
+        entries[entries.length - 1].details.push(text)
+      }
     }
   }
 
@@ -60,6 +61,7 @@ const navItems = [
   { labelKey: 'nav.textToolbox', descKey: 'nav.textToolbox.desc', path: '/text-toolbox', icon: FileText },
   { labelKey: 'nav.converters', descKey: 'nav.converters.desc', path: '/converters', icon: ArrowLeftRight },
   { labelKey: 'nav.diffCompare', descKey: 'nav.diffCompare.desc', path: '/diff-compare', icon: GitCompare },
+  { labelKey: 'nav.everydayTools', descKey: 'nav.everydayTools.desc', path: '/everyday-tools', icon: Calculator },
   { labelKey: 'nav.codeUtils', descKey: 'nav.codeUtils.desc', path: '/code-utils', icon: Code2 },
 ]
 
@@ -96,6 +98,26 @@ export function Sidebar() {
     setIsChangelogOpen(true)
   }
 
+  const ui = lang === 'hu'
+    ? {
+        openChangelog: 'Változásnapló megnyitása',
+        changelog: 'Változásnapló',
+        closeChangelog: 'Változásnapló bezárása',
+        noEntries: 'Nincs található bejegyzés a changelogban.',
+        prev: 'Előző',
+        next: 'Következő',
+        page: 'Oldal',
+      }
+    : {
+        openChangelog: 'Open changelog',
+        changelog: 'Changelog',
+        closeChangelog: 'Close changelog',
+        noEntries: 'No changelog entries found.',
+        prev: 'Prev',
+        next: 'Next',
+        page: 'Page',
+      }
+
   return (
     <>
       <div className="flex h-full w-64 flex-col border-r bg-card">
@@ -107,8 +129,8 @@ export function Sidebar() {
             variant="ghost"
             className="ml-auto h-8 w-8"
             onClick={openChangelog}
-            title="Open changelog"
-            aria-label="Open changelog"
+            title={ui.openChangelog}
+            aria-label={ui.openChangelog}
           >
             <ScrollText className="h-4 w-4" />
           </Button>
@@ -183,16 +205,13 @@ export function Sidebar() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b px-4 py-3">
-              <div>
-                <p className="font-semibold text-sm">Changelog</p>
-                <p className="text-xs text-muted-foreground">From `CHANGELOG.md`</p>
-              </div>
+              <p className="font-semibold text-sm">{ui.changelog}</p>
               <Button
                 size="icon"
                 variant="ghost"
                 className="h-7 w-7"
                 onClick={() => setIsChangelogOpen(false)}
-                aria-label="Close changelog"
+                aria-label={ui.closeChangelog}
               >
                 <X className="h-4 w-4" />
               </Button>
@@ -200,12 +219,19 @@ export function Sidebar() {
 
             <div className="space-y-3 p-4">
               {visibleEntries.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No changelog entries found.</p>
+                <p className="text-xs text-muted-foreground">{ui.noEntries}</p>
               ) : (
                 visibleEntries.map((entry, idx) => (
                   <div key={`${safePage}-${idx}`} className="rounded-md border p-3">
-                    <p className="text-[11px] text-muted-foreground">{entry.version} · {entry.section}</p>
-                    <p className="mt-1 text-xs">{entry.text}</p>
+                    <p className="text-[11px] text-muted-foreground">{entry.version} - {entry.section}</p>
+                    <p className="mt-1 text-xs font-medium">{entry.text}</p>
+                    {entry.details.length > 0 && (
+                      <ul className="mt-1 list-disc space-y-1 pl-4 text-xs">
+                        {entry.details.map((detail, detailIdx) => (
+                          <li key={`${safePage}-${idx}-${detailIdx}`} className="leading-relaxed">{detail}</li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 ))
               )}
@@ -219,16 +245,16 @@ export function Sidebar() {
                 disabled={safePage === 0}
               >
                 <ChevronLeft className="h-3 w-3 mr-1" />
-                Prev
+                {ui.prev}
               </Button>
-              <span className="text-xs text-muted-foreground">Page {safePage + 1} / {totalPages}</span>
+              <span className="text-xs text-muted-foreground">{ui.page} {safePage + 1} / {totalPages}</span>
               <Button
                 size="sm"
                 variant="outline"
                 onClick={() => setPage((prev) => Math.min(totalPages - 1, prev + 1))}
                 disabled={safePage >= totalPages - 1}
               >
-                Next
+                {ui.next}
                 <ChevronRight className="h-3 w-3 ml-1" />
               </Button>
             </div>

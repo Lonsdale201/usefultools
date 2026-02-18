@@ -5,6 +5,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -80,8 +81,8 @@ function WordFreqTab() {
               <SelectItem value="none">{t('tt.wordFreq.none')}</SelectItem>
             </SelectContent>
           </Select>
-          <label className="flex items-center gap-1 text-sm">
-            <input type="checkbox" checked={opts.caseFold} onChange={(e) => setOpts({ ...opts, caseFold: e.target.checked })} />
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={opts.caseFold} onCheckedChange={(checked) => setOpts({ ...opts, caseFold: checked === true })} />
             {t('tt.wordFreq.caseFold')}
           </label>
           <div className="flex items-center gap-1">
@@ -201,8 +202,8 @@ function DedupTab() {
         <div className="flex flex-wrap items-center gap-3">
           <Button size="sm" variant={mode === 'sentences' ? 'default' : 'outline'} onClick={() => setMode('sentences')}>{t('tt.dedup.sentences')}</Button>
           <Button size="sm" variant={mode === 'paragraphs' ? 'default' : 'outline'} onClick={() => setMode('paragraphs')}>{t('tt.dedup.paragraphs')}</Button>
-          <label className="flex items-center gap-1 text-sm">
-            <input type="checkbox" checked={caseInsensitive} onChange={(e) => setCaseInsensitive(e.target.checked)} />
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={caseInsensitive} onCheckedChange={(checked) => setCaseInsensitive(checked === true)} />
             {t('tt.dedup.caseFold')}
           </label>
           <Button size="sm" onClick={run}>{t('common.search')}</Button>
@@ -287,12 +288,12 @@ function ReadabilityTab() {
 
 let regexIdCounter = 1
 
-const REGEX_EXTRACT_PRESETS: Array<{ label: string; pattern: string; flags: string }> = [
-  { label: 'Email', pattern: '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}', flags: 'gi' },
-  { label: 'URL', pattern: 'https?:\\/\\/[^\\s"\'<>]+', flags: 'gi' },
-  { label: 'Hashtag', pattern: '#([A-Za-z0-9_]+)', flags: 'g' },
-  { label: 'Phone', pattern: '\\+?\\d[\\d\\s().-]{6,}\\d', flags: 'g' },
-  { label: 'ID', pattern: '\\b[A-Z]{2,5}-\\d{2,6}\\b', flags: 'g' },
+const REGEX_EXTRACT_PRESETS: Array<{ key: 'email' | 'url' | 'hashtag' | 'phone' | 'id'; pattern: string; flags: string }> = [
+  { key: 'email', pattern: '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}', flags: 'gi' },
+  { key: 'url', pattern: 'https?:\\/\\/[^\\s"\'<>]+', flags: 'gi' },
+  { key: 'hashtag', pattern: '#([A-Za-z0-9_]+)', flags: 'g' },
+  { key: 'phone', pattern: '\\+?\\d[\\d\\s().-]{6,}\\d', flags: 'g' },
+  { key: 'id', pattern: '\\b[A-Z]{2,5}-\\d{2,6}\\b', flags: 'g' },
 ]
 
 function buildExtractTable(matches: RegexExtractMatch[]) {
@@ -318,7 +319,37 @@ function buildExtractTable(matches: RegexExtractMatch[]) {
 }
 
 function RegexTab() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
+  const ui = lang === 'hu'
+    ? {
+        findReplace: 'Keresés / Csere',
+        extract: 'Kinyerés',
+        patternPlaceholder: 'Regex minta',
+        flagsPlaceholder: 'flagek',
+        extractRun: 'Kinyerés',
+        extractJson: 'JSON',
+        extractCsv: 'CSV',
+        matches: 'találat',
+        index: 'Pozíció',
+        match: 'Találat',
+        noMatches: 'Nincs találat.',
+      }
+    : {
+        findReplace: 'Find / Replace',
+        extract: 'Extract',
+        patternPlaceholder: 'Regex pattern',
+        flagsPlaceholder: 'flags',
+        extractRun: 'Extract',
+        extractJson: 'JSON',
+        extractCsv: 'CSV',
+        matches: 'matches',
+        index: 'Index',
+        match: 'Match',
+        noMatches: 'No matches found.',
+      }
+  const presetLabels = lang === 'hu'
+    ? { email: 'Email', url: 'URL', hashtag: 'Hashtag', phone: 'Telefon', id: 'Azonosító' }
+    : { email: 'Email', url: 'URL', hashtag: 'Hashtag', phone: 'Phone', id: 'ID' }
   const [text, setText] = useState('')
   const [mode, setMode] = useState<'replace' | 'extract'>('replace')
 
@@ -398,10 +429,10 @@ function RegexTab() {
       <CardContent className="space-y-4">
         <div className="flex items-center gap-2">
           <Button size="sm" variant={mode === 'replace' ? 'default' : 'outline'} onClick={() => setMode('replace')}>
-            Find / Replace
+            {ui.findReplace}
           </Button>
           <Button size="sm" variant={mode === 'extract' ? 'default' : 'outline'} onClick={() => setMode('extract')}>
-            Extract
+            {ui.extract}
           </Button>
         </div>
 
@@ -450,13 +481,13 @@ function RegexTab() {
             <div className="grid gap-2 md:grid-cols-[1fr_96px]">
               <Input
                 className="h-8 font-mono text-xs"
-                placeholder="Regex pattern"
+                placeholder={ui.patternPlaceholder}
                 value={extractPattern}
                 onChange={(e) => setExtractPattern(e.target.value)}
               />
               <Input
                 className="h-8 font-mono text-xs"
-                placeholder="flags"
+                placeholder={ui.flagsPlaceholder}
                 value={extractFlags}
                 onChange={(e) => setExtractFlags(e.target.value)}
               />
@@ -464,7 +495,7 @@ function RegexTab() {
             <div className="flex flex-wrap gap-2">
               {REGEX_EXTRACT_PRESETS.map((preset) => (
                 <Button
-                  key={preset.label}
+                  key={preset.key}
                   size="sm"
                   variant="outline"
                   onClick={() => {
@@ -472,14 +503,14 @@ function RegexTab() {
                     setExtractFlags(preset.flags)
                   }}
                 >
-                  {preset.label}
+                  {presetLabels[preset.key]}
                 </Button>
               ))}
             </div>
           </div>
         )}
 
-        <Button size="sm" onClick={run}>{mode === 'replace' ? t('common.run') : 'Extract'}</Button>
+        <Button size="sm" onClick={run}>{mode === 'replace' ? t('common.run') : ui.extractRun}</Button>
 
         {mode === 'replace' && errors.length > 0 && (
           <div className="rounded-md bg-destructive/10 border border-destructive/30 p-2 text-xs text-destructive">
@@ -526,20 +557,20 @@ function RegexTab() {
             {extractResults.length > 0 && (
               <>
                 <div className="flex items-center gap-2">
-                  <Badge>{extractResults.length} matches</Badge>
+                  <Badge>{extractResults.length} {ui.matches}</Badge>
                   <Button size="sm" variant="outline" onClick={exportExtractCSV}>
-                    <Download className="mr-1 h-3 w-3" /> CSV
+                    <Download className="mr-1 h-3 w-3" /> {ui.extractCsv}
                   </Button>
                   <Button size="sm" variant="outline" onClick={exportExtractJSON}>
-                    <Download className="mr-1 h-3 w-3" /> JSON
+                    <Download className="mr-1 h-3 w-3" /> {ui.extractJson}
                   </Button>
                 </div>
                 <div className="overflow-auto max-h-72 rounded-md border">
                   <table className="w-full text-xs border-collapse">
                     <thead>
                       <tr className="border-b bg-muted/40">
-                        <th className="px-2 py-1.5 text-left">Index</th>
-                        <th className="px-2 py-1.5 text-left">Match</th>
+                        <th className="px-2 py-1.5 text-left">{ui.index}</th>
+                        <th className="px-2 py-1.5 text-left">{ui.match}</th>
                         {Array.from({ length: extractTable.groupCount }).map((_, i) => (
                           <th key={`g-${i}`} className="px-2 py-1.5 text-left">{`Group${i + 1}`}</th>
                         ))}
@@ -567,7 +598,7 @@ function RegexTab() {
               </>
             )}
             {extractRan && !extractError && extractResults.length === 0 && (
-              <p className="text-xs text-muted-foreground">No matches found.</p>
+              <p className="text-xs text-muted-foreground">{ui.noMatches}</p>
             )}
           </div>
         )}
@@ -579,46 +610,59 @@ function RegexTab() {
 // Lorem Ipsum Generator
 
 function LoremTab() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
+  const ui = lang === 'hu'
+    ? { sentencesPerParagraph: 'Mondat / bekezdés' }
+    : { sentencesPerParagraph: 'Sentences / paragraph' }
   const [mode, setMode] = useState<'paragraphs' | 'sentences' | 'words'>('paragraphs')
   const [count, setCount] = useState(3)
+  const [sentencesPerParagraph, setSentencesPerParagraph] = useState(6)
   const [startWithLorem, setStartWithLorem] = useState(true)
   const [output, setOutput] = useState('')
+  const [paragraphsOutput, setParagraphsOutput] = useState<string[]>([])
   const [copied, setCopied] = useState(false)
 
   const generate = () => {
     let text = ''
     const n = Math.max(1, count)
     if (mode === 'paragraphs') {
-      text = faker.lorem.paragraphs(n, '\n\n')
+      const sentenceCount = Math.max(1, sentencesPerParagraph)
+      const paragraphs = Array.from({ length: n }, () => faker.lorem.sentences(sentenceCount))
       if (startWithLorem) {
         const loremStart = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.'
-        // Replace the beginning of the first paragraph
-        const firstDotIndex = text.indexOf('.')
-        if (firstDotIndex !== -1) {
-          text = loremStart + text.slice(firstDotIndex + 1)
-        } else {
-          text = loremStart + ' ' + text
+        if (paragraphs.length > 0) {
+          const first = paragraphs[0] ?? ''
+          const firstDotIndex = first.indexOf('.')
+          paragraphs[0] = firstDotIndex !== -1
+            ? loremStart + first.slice(firstDotIndex + 1)
+            : `${loremStart} ${first}`.trim()
         }
       }
+      setParagraphsOutput(paragraphs)
+      text = paragraphs.join('\n\n')
     } else if (mode === 'sentences') {
+      setParagraphsOutput([])
       text = faker.lorem.sentences(n)
     } else {
+      setParagraphsOutput([])
       text = faker.lorem.words(n)
     }
     setOutput(text)
   }
 
   const copy = async () => {
-    await copyToClipboard(output)
+    const textToCopy = mode === 'paragraphs' && paragraphsOutput.length > 0
+      ? paragraphsOutput.join('\n\n')
+      : output
+    await copyToClipboard(textToCopy)
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
 
-  const paragraphOutput = output
-    .split(/\n{2,}/)
-    .map((p) => p.trim())
-    .filter(Boolean)
+  const paragraphOutput =
+    paragraphsOutput.length > 0
+      ? paragraphsOutput
+      : output.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean)
 
   return (
     <Card>
@@ -649,11 +693,23 @@ function LoremTab() {
               onChange={(e) => setCount(parseInt(e.target.value) || 1)}
             />
           </div>
-          <label className="flex items-center gap-1 text-sm">
-            <input
-              type="checkbox"
+          {mode === 'paragraphs' && (
+            <div className="flex items-center gap-1">
+              <Label className="text-sm whitespace-nowrap">{ui.sentencesPerParagraph}</Label>
+              <Input
+                className="w-20 h-8 text-sm"
+                type="number"
+                min={1}
+                max={30}
+                value={sentencesPerParagraph}
+                onChange={(e) => setSentencesPerParagraph(parseInt(e.target.value) || 1)}
+              />
+            </div>
+          )}
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
               checked={startWithLorem}
-              onChange={(e) => setStartWithLorem(e.target.checked)}
+              onCheckedChange={(checked) => setStartWithLorem(checked === true)}
             />
             {t('tt.lorem.startWithLorem')}
           </label>

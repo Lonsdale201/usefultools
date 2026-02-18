@@ -3,10 +3,11 @@ import { Plus, Trash2, RefreshCw, Download, ChevronUp, ChevronDown } from 'lucid
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectGroup, SelectLabel, SelectSeparator } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { type ColumnDef, type ColumnType, COLUMN_TYPE_LABELS, COLUMN_TYPE_GROUPS, generateRows } from './generators'
+import { type ColumnDef, type ColumnType, COLUMN_TYPE_GROUPS, generateRows } from './generators'
 import { exportCSV, exportJSON, exportXLSX, exportSQL } from './export'
 import { useI18n } from '@/lib/i18n'
 
@@ -71,8 +72,96 @@ function newId() {
   return String(idCounter++)
 }
 
+function getColumnTypeLabel(type: ColumnType, lang: 'en' | 'hu') {
+  const labels: Record<'en' | 'hu', Record<ColumnType, string>> = {
+    en: {
+      firstName: 'First Name',
+      lastName: 'Last Name',
+      fullName: 'Full Name',
+      email: 'Email',
+      phone: 'Phone',
+      username: 'Username',
+      jobTitle: 'Job Title',
+      address: 'Address',
+      city: 'City',
+      country: 'Country',
+      zipCode: 'Zip Code',
+      latitude: 'Latitude',
+      longitude: 'Longitude',
+      productName: 'Product Name',
+      productCategory: 'Product Category',
+      productDescription: 'Product Description',
+      price: 'Price',
+      color: 'Color',
+      company: 'Company',
+      department: 'Department',
+      iban: 'IBAN',
+      creditCard: 'Credit Card',
+      date: 'Date',
+      datetime: 'Date + Time',
+      int: 'Integer',
+      float: 'Float',
+      boolean: 'Boolean',
+      uuid: 'UUID',
+      enum: 'Enum (custom list)',
+      url: 'URL',
+      ipAddress: 'IP Address',
+      userAgent: 'User Agent',
+      fileName: 'File Name',
+      mimeType: 'MIME Type',
+      word: 'Random Word',
+      sentence: 'Sentence',
+      paragraph: 'Paragraph',
+      loremWords: 'Lorem (N words)',
+      customRegex: 'Custom Regex',
+    },
+    hu: {
+      firstName: 'Keresztnév',
+      lastName: 'Vezetéknév',
+      fullName: 'Teljes név',
+      email: 'Email',
+      phone: 'Telefonszám',
+      username: 'Felhasználónév',
+      jobTitle: 'Beosztás',
+      address: 'Cím',
+      city: 'Város',
+      country: 'Ország',
+      zipCode: 'Irányítószám',
+      latitude: 'Szélesség',
+      longitude: 'Hosszúság',
+      productName: 'Terméknév',
+      productCategory: 'Termék kategória',
+      productDescription: 'Termék leírás',
+      price: 'Ár',
+      color: 'Szín',
+      company: 'Cég',
+      department: 'Részleg',
+      iban: 'IBAN',
+      creditCard: 'Bankkártya',
+      date: 'Dátum',
+      datetime: 'Dátum + idő',
+      int: 'Egész szám',
+      float: 'Törtszám',
+      boolean: 'Logikai',
+      uuid: 'UUID',
+      enum: 'Enum (saját lista)',
+      url: 'URL',
+      ipAddress: 'IP cím',
+      userAgent: 'User Agent',
+      fileName: 'Fájlnév',
+      mimeType: 'MIME típus',
+      word: 'Véletlen szó',
+      sentence: 'Mondat',
+      paragraph: 'Bekezdés',
+      loremWords: 'Lorem (N szó)',
+      customRegex: 'Egyedi regex',
+    },
+  }
+  return labels[lang][type]
+}
+
 export function DataGenerator() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [columns, setColumns] = useState<ColumnDef[]>(PRESET_COLUMNS.users.columns)
   const [rowCount, setRowCount] = useState(100)
   const [seed, setSeed] = useState<string>('')
@@ -163,6 +252,7 @@ export function DataGenerator() {
                 onRemove={() => removeColumn(col.id)}
                 onMove={(dir) => moveColumn(col.id, dir)}
                 t={t}
+                lang={lang}
               />
             ))}
             <Button variant="outline" size="sm" onClick={addColumn} className="mt-2 w-full">
@@ -280,9 +370,10 @@ interface ColumnRowProps {
   onRemove: () => void
   onMove: (dir: -1 | 1) => void
   t: (key: string) => string
+  lang: 'en' | 'hu'
 }
 
-function ColumnRow({ col, isFirst, isLast, onChange, onRemove, onMove, t }: ColumnRowProps) {
+function ColumnRow({ col, isFirst, isLast, onChange, onRemove, onMove, t, lang }: ColumnRowProps) {
   return (
     <div className="flex items-center gap-2 rounded-md border px-3 py-2">
       <div className="flex flex-col">
@@ -321,7 +412,7 @@ function ColumnRow({ col, isFirst, isLast, onChange, onRemove, onMove, t }: Colu
                 <SelectLabel className="text-xs font-bold text-primary">{t(group.labelKey)}</SelectLabel>
                 {group.types.map((tp) => (
                   <SelectItem key={tp} value={tp} className="text-xs">
-                    {COLUMN_TYPE_LABELS[tp]}
+                    {getColumnTypeLabel(tp, lang)}
                   </SelectItem>
                 ))}
               </SelectGroup>
@@ -397,12 +488,11 @@ function ColumnRow({ col, isFirst, isLast, onChange, onRemove, onMove, t }: Colu
         />
       )}
 
-      <label className="flex items-center gap-1 text-xs text-muted-foreground cursor-pointer ml-auto">
-        <input
-          type="checkbox"
+      <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer ml-auto">
+        <Checkbox
           checked={col.unique ?? false}
-          onChange={(e) => onChange({ unique: e.target.checked })}
-          className="h-3 w-3"
+          onCheckedChange={(checked) => onChange({ unique: checked === true })}
+          className="h-3.5 w-3.5"
         />
         {t('common.unique')}
       </label>

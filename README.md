@@ -42,6 +42,7 @@ Everything runs client-side in your browser. No server processing is required.
 - JSON <-> YAML
 - CSV cleaner
 - Paste table -> CSV/XLSX
+- SQL INSERT dump -> JSON/CSV
 
 ### Diff & Compare
 

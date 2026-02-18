@@ -2,6 +2,12 @@
 
 All notable changes to this project are tracked in this file.
 
+## [Unreleased]
+
+### Added
+
+- SQL INSERT dump converter in Converters (`SQL -> JSON/CSV`) with paste and file upload support
+
 ## [1.0.0] - 2026.02.18
 
 ### Added

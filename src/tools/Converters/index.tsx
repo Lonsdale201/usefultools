@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Download, Copy, Check, AlertTriangle } from 'lucide-react'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
@@ -12,6 +12,7 @@ import { jsonToCSV, csvToJSON } from './jsonCsv'
 import { jsonToYAML, yamlToJSON } from './jsonYaml'
 import { cleanCSV, type CleanOptions } from './csvCleaner'
 import { parsePastedTable, pasteTableToCSV, pasteTableToXLSX } from './pasteTable'
+import { sqlToRows, rowsToCSV, rowsToJSON } from './sqlToJsonCsv'
 import { useI18n } from '@/lib/i18n'
 
 export function Converters() {
@@ -28,11 +29,13 @@ export function Converters() {
           <TabsTrigger value="json-yaml">{t('cv.jsonYaml')}</TabsTrigger>
           <TabsTrigger value="csv-cleaner">{t('cv.csvCleaner')}</TabsTrigger>
           <TabsTrigger value="paste-table">{t('cv.pasteTable')}</TabsTrigger>
+          <TabsTrigger value="sql-converter">SQL -{'>'} JSON/CSV</TabsTrigger>
         </TabsList>
         <TabsContent value="json-csv"><JsonCsvTab /></TabsContent>
         <TabsContent value="json-yaml"><JsonYamlTab /></TabsContent>
         <TabsContent value="csv-cleaner"><CsvCleanerTab /></TabsContent>
         <TabsContent value="paste-table"><PasteTableTab /></TabsContent>
+        <TabsContent value="sql-converter"><SqlConverterTab /></TabsContent>
       </Tabs>
     </div>
   )
@@ -307,8 +310,132 @@ function PasteTableTab() {
   )
 }
 
-// ─── Shared: TwoPanel ─────────────────────────────────────────────────────────
+// SQL -> JSON/CSV
 
+function SqlConverterTab() {
+  const [input, setInput] = useState('')
+  const [output, setOutput] = useState('')
+  const [rows, setRows] = useState<Record<string, string | number | boolean | null>[]>([])
+  const [tableNames, setTableNames] = useState<string[]>([])
+  const [warnings, setWarnings] = useState<string[]>([])
+  const [error, setError] = useState('')
+  const [copied, setCopied] = useState(false)
+  const [mode, setMode] = useState<'json' | 'csv'>('json')
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const buildOutput = (
+    nextRows: Record<string, string | number | boolean | null>[],
+    nextMode: 'json' | 'csv'
+  ) => {
+    return nextMode === 'json' ? rowsToJSON(nextRows) : rowsToCSV(nextRows)
+  }
+
+  const run = () => {
+    const parsed = sqlToRows(input)
+    setWarnings(parsed.warnings)
+
+    if (parsed.error) {
+      setError(parsed.error)
+      setOutput('')
+      setRows([])
+      setTableNames([])
+      return
+    }
+
+    setError('')
+    setRows(parsed.rows)
+    setTableNames(parsed.tableNames)
+    setOutput(buildOutput(parsed.rows, mode))
+  }
+
+  const onModeChange = (nextMode: 'json' | 'csv') => {
+    setMode(nextMode)
+    if (rows.length > 0) {
+      setOutput(buildOutput(rows, nextMode))
+    }
+  }
+
+  const copy = async () => {
+    await copyToClipboard(output)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  const download = () => {
+    if (!output) return
+    const ext = mode === 'json' ? 'json' : 'csv'
+    const mime = mode === 'json' ? 'application/json' : 'text/csv'
+    downloadFile(output, `converted-from-sql.${ext}`, mime)
+  }
+
+  const onFileChange = async (file: File | undefined) => {
+    if (!file) return
+    const text = await file.text()
+    setInput(text)
+    setError('')
+    setWarnings([])
+    setOutput('')
+    setRows([])
+    setTableNames([])
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>SQL Insert Dump to JSON/CSV</CardTitle>
+        <CardDescription>Paste or upload SQL with INSERT INTO ... VALUES ... statements.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <Button size="sm" variant={mode === 'json' ? 'default' : 'outline'} onClick={() => onModeChange('json')}>
+            JSON output
+          </Button>
+          <Button size="sm" variant={mode === 'csv' ? 'default' : 'outline'} onClick={() => onModeChange('csv')}>
+            CSV output
+          </Button>
+          <Button size="sm" onClick={run}>Convert</Button>
+          <Button size="sm" variant="outline" onClick={() => fileInputRef.current?.click()}>
+            Upload .sql
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".sql,text/plain"
+            className="hidden"
+            onChange={(e) => {
+              onFileChange(e.target.files?.[0])
+              e.currentTarget.value = ''
+            }}
+          />
+        </div>
+
+        {rows.length > 0 && (
+          <div className="flex gap-2 flex-wrap">
+            <Badge variant="secondary">Rows: {rows.length}</Badge>
+            <Badge variant="secondary">Tables: {tableNames.length}</Badge>
+            <Badge variant="outline">{tableNames.join(', ')}</Badge>
+          </div>
+        )}
+
+        <TwoPanel
+          input={input}
+          onInput={setInput}
+          output={output}
+          error={error}
+          warning={warnings.length ? warnings.slice(0, 3).join(' | ') : undefined}
+          onCopy={copy}
+          onDownload={download}
+          copied={copied}
+          inputLabel="SQL Input"
+          outputLabel={mode === 'json' ? 'JSON Output' : 'CSV Output'}
+          inputPlaceholder="INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com');"
+        />
+      </CardContent>
+    </Card>
+  )
+}
+
+// Shared: TwoPanel
 interface TwoPanelProps {
   input: string
   onInput: (v: string) => void
@@ -359,3 +486,6 @@ function TwoPanel({ input, onInput, output, error, warning, onCopy, onDownload, 
     </div>
   )
 }
+
+
+

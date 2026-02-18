@@ -129,7 +129,7 @@ export const COLUMN_TYPE_LABELS: Record<ColumnType, string> = {
   float: 'Float',
   boolean: 'Boolean',
   uuid: 'UUID',
-  enum: 'Enum (saját lista)',
+  enum: 'Enum (custom list)',
   // Tech
   url: 'URL',
   ipAddress: 'IP Address',
@@ -140,7 +140,7 @@ export const COLUMN_TYPE_LABELS: Record<ColumnType, string> = {
   word: 'Random Word',
   sentence: 'Sentence',
   paragraph: 'Paragraph',
-  loremWords: 'Lorem (N szó)',
+  loremWords: 'Lorem (N words)',
   // Custom
   customRegex: 'Custom Regex',
 }

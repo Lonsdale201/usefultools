@@ -669,9 +669,9 @@ function LoremTab() {
             </div>
             {mode === 'paragraphs' ? (
               <div className="max-h-72 overflow-auto rounded-md border bg-background p-4">
-                <div className="text-sm leading-7">
+                <div className="flex flex-col gap-5 text-sm leading-7">
                   {paragraphOutput.map((p, idx) => (
-                    <p key={idx} className="mt-0 mb-5 last:mb-0">{p}</p>
+                    <p key={idx} className="m-0">{p}</p>
                   ))}
                 </div>
               </div>

@@ -1,4 +1,4 @@
-﻿import { useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import { Download, Copy, Check, AlertTriangle, Plus, Trash2 } from 'lucide-react'
 import Papa from 'papaparse'
 import { JSONPath } from 'jsonpath-plus'
@@ -335,6 +335,26 @@ interface JsonPathExplorerMatch {
   value: unknown
 }
 
+interface DynamicCandidate {
+  path: string
+  label: string
+  rows: Record<string, unknown>[]
+  rowCount: number
+  expandableKeys: string[]
+}
+
+interface DynamicFilterRow {
+  id: string
+  key: string
+  operator: 'contains' | 'equals'
+  value: string
+}
+
+interface LabelValuePair {
+  label: string
+  value: string
+}
+
 function previewValue(value: unknown): string {
   if (typeof value === 'string') return value
   if (typeof value === 'number' || typeof value === 'boolean' || value === null) return String(value)
@@ -345,17 +365,110 @@ function previewValue(value: unknown): string {
   }
 }
 
-function normalizeJsonPath(path: string | string[]): string {
+function normalizeJsonPath(path: string | Array<string | number>): string {
   if (!Array.isArray(path)) return String(path)
-  if (path.length === 0) return '$'
-  return path
+  const normalized = path.length === 0
+    ? ['$']
+    : path[0] === '$'
+      ? path
+      : ['$', ...path]
+  return normalized
     .map((segment, idx) => {
       if (idx === 0) return '$'
       if (typeof segment === 'number') return `[${segment}]`
-      if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment)) return `.${segment}`
-      return `['${segment.replace(/'/g, "\\'")}']`
+      const key = String(segment)
+      if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)) return `.${key}`
+      return `['${key.replace(/'/g, "\\'")}']`
     })
     .join('')
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isPrimitiveLike(value: unknown): boolean {
+  return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+}
+
+function flattenRowValues(
+  row: Record<string, unknown>,
+  prefix = '',
+  excludeKeys: Set<string> = new Set()
+): Record<string, string> {
+  const flat: Record<string, string> = {}
+  Object.entries(row).forEach(([key, value]) => {
+    if (excludeKeys.has(key)) return
+    const targetKey = prefix ? `${prefix}.${key}` : key
+    if (isPrimitiveLike(value)) {
+      flat[targetKey] = previewValue(value)
+      return
+    }
+    if (Array.isArray(value) && value.every((item) => isPrimitiveLike(item))) {
+      flat[targetKey] = value.map((item) => previewValue(item)).join(', ')
+    }
+  })
+  return flat
+}
+
+function collectDynamicCandidates(root: unknown): DynamicCandidate[] {
+  const candidates: DynamicCandidate[] = []
+
+  const walk = (node: unknown, path: Array<string | number>) => {
+    if (Array.isArray(node)) {
+      const objectRows = node.filter(isRecord) as Record<string, unknown>[]
+      if (objectRows.length > 0) {
+        const keySet = new Set<string>()
+        objectRows.forEach((row) => {
+          Object.entries(row).forEach(([key, value]) => {
+            if (Array.isArray(value) && value.some(isRecord)) keySet.add(key)
+          })
+        })
+        const normalizedPath = normalizeJsonPath(path)
+        candidates.push({
+          path: normalizedPath,
+          label: `${normalizedPath} [${objectRows.length}]`,
+          rows: objectRows,
+          rowCount: objectRows.length,
+          expandableKeys: Array.from(keySet).sort(),
+        })
+      }
+      node.forEach((item, index) => walk(item, [...path, index]))
+      return
+    }
+    if (!isRecord(node)) return
+    Object.entries(node).forEach(([key, value]) => walk(value, [...path, key]))
+  }
+
+  walk(root, [])
+  return candidates
+}
+
+function expandCandidateRows(candidate: DynamicCandidate, expandKey: string): Array<Record<string, string>> {
+  if (expandKey === '__none__') {
+    return candidate.rows.map((row) => flattenRowValues(row))
+  }
+  const expanded: Array<Record<string, string>> = []
+  candidate.rows.forEach((row) => {
+    const parentFlat = flattenRowValues(row, '', new Set([expandKey]))
+    const nested = row[expandKey]
+    if (!Array.isArray(nested)) {
+      expanded.push(parentFlat)
+      return
+    }
+    const objectChildren = nested.filter(isRecord) as Record<string, unknown>[]
+    if (objectChildren.length === 0) {
+      expanded.push(parentFlat)
+      return
+    }
+    objectChildren.forEach((child) => {
+      expanded.push({
+        ...parentFlat,
+        ...flattenRowValues(child, expandKey),
+      })
+    })
+  })
+  return expanded
 }
 
 function JsonTreeNode({ label, value, depth }: { label: string; value: unknown; depth: number }) {
@@ -398,6 +511,7 @@ function JsonPathExplorerTab() {
         treeView: 'Strukturált tree nézet',
         query: 'JSONPath',
         run: 'Lekérdezés',
+        analyze: 'JSON elemzése',
         invalidJson: 'Érvénytelen JSON.',
         invalidPath: 'Érvénytelen JSONPath.',
         matches: 'találat',
@@ -405,6 +519,42 @@ function JsonPathExplorerTab() {
         value: 'Érték',
         copy: 'Másolás',
         downloadCsv: 'CSV letöltés',
+        fieldExtract: 'Dinamikus kivonat',
+        fieldExtractDesc: 'Automatikus rekordforrás-felismerés, dinamikus szűrők és label/value párok.',
+        analyzeHint: 'Előbb futtasd a JSON elemzést vagy JSONPath lekérdezést.',
+        fieldSearch: 'Forrás szűrés',
+        fieldSearchPlaceholder: 'pl. options, meta_fields, listings',
+        datasetSelect: 'Rekordforrás',
+        datasetSelectPlaceholder: 'Válassz rekordforrást',
+        datasetPath: 'Forrás útvonal',
+        rowsFound: 'sor',
+        expandBy: 'Kibontás',
+        expandNone: 'Nincs (közvetlen sorok)',
+        filters: 'Szűrők',
+        addFilter: 'Szűrő hozzáadása',
+        filterField: 'Mező',
+        filterFieldPlaceholder: 'Mező kiválasztása',
+        filterOp: 'Művelet',
+        filterContains: 'tartalmazza',
+        filterEquals: 'egyenlő',
+        filterValue: 'Érték',
+        filterValuePlaceholder: 'pl. jelleg',
+        labelField: 'Label mező',
+        valueField: 'Value mező',
+        labelFieldPlaceholder: 'Válassz label mezőt',
+        valueFieldPlaceholder: 'Válassz value mezőt',
+        outputFormat: 'Kimenet',
+        formatPairs: 'label: ... / value: ...',
+        formatComma: 'Csak value, vesszővel',
+        formatPlain: 'Csak value, soronként',
+        formatJson: 'JSON label/value tömb',
+        uniqueOnly: 'Csak egyedi értékek',
+        pairCount: 'pár',
+        preview: 'Előnézet',
+        output: 'Kivont kimenet',
+        downloadTxt: 'TXT letöltés',
+        noDatasets: 'Nem találtam objektum-lista alapú rekordforrást az inputban.',
+        noRows: 'Nincs sor a kiválasztott feltételekkel.',
         placeholder: '{\n  \"user\": {\"name\": \"Anna\", \"tags\": [\"pro\", \"beta\"]}\n}',
       }
     : {
@@ -414,6 +564,7 @@ function JsonPathExplorerTab() {
         treeView: 'Structured tree view',
         query: 'JSONPath',
         run: 'Query',
+        analyze: 'Analyze JSON',
         invalidJson: 'Invalid JSON.',
         invalidPath: 'Invalid JSONPath.',
         matches: 'matches',
@@ -421,6 +572,42 @@ function JsonPathExplorerTab() {
         value: 'Value',
         copy: 'Copy',
         downloadCsv: 'Download CSV',
+        fieldExtract: 'Dynamic extractor',
+        fieldExtractDesc: 'Auto-discovered record sources, dynamic filters, and label/value pairs.',
+        analyzeHint: 'Run JSON analysis or JSONPath query first.',
+        fieldSearch: 'Source filter',
+        fieldSearchPlaceholder: 'e.g. options, meta_fields, listings',
+        datasetSelect: 'Record source',
+        datasetSelectPlaceholder: 'Select record source',
+        datasetPath: 'Source path',
+        rowsFound: 'rows',
+        expandBy: 'Expand by',
+        expandNone: 'None (direct rows)',
+        filters: 'Filters',
+        addFilter: 'Add filter',
+        filterField: 'Field',
+        filterFieldPlaceholder: 'Select field',
+        filterOp: 'Operator',
+        filterContains: 'contains',
+        filterEquals: 'equals',
+        filterValue: 'Value',
+        filterValuePlaceholder: 'e.g. jelleg',
+        labelField: 'Label field',
+        valueField: 'Value field',
+        labelFieldPlaceholder: 'Select label field',
+        valueFieldPlaceholder: 'Select value field',
+        outputFormat: 'Output',
+        formatPairs: 'label: ... / value: ...',
+        formatComma: 'value only, comma',
+        formatPlain: 'value only, plain',
+        formatJson: 'JSON label/value array',
+        uniqueOnly: 'Unique values only',
+        pairCount: 'pairs',
+        preview: 'Preview',
+        output: 'Extracted output',
+        downloadTxt: 'Download TXT',
+        noDatasets: 'No object-array based record sources found in input.',
+        noRows: 'No rows match the selected conditions.',
         placeholder: '{\n  \"user\": {\"name\": \"Anna\", \"tags\": [\"pro\", \"beta\"]}\n}',
       }
 
@@ -430,17 +617,38 @@ function JsonPathExplorerTab() {
   const [matches, setMatches] = useState<JsonPathExplorerMatch[]>([])
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
+  const [fieldFilter, setFieldFilter] = useState('')
+  const [selectedCandidatePath, setSelectedCandidatePath] = useState('')
+  const [expandKey, setExpandKey] = useState('__none__')
+  const [filters, setFilters] = useState<DynamicFilterRow[]>([{ id: 'f-1', key: '', operator: 'contains', value: '' }])
+  const [labelKey, setLabelKey] = useState('')
+  const [valueKey, setValueKey] = useState('')
+  const [outputMode, setOutputMode] = useState<'pairs' | 'comma' | 'plain' | 'json'>('pairs')
+  const [uniqueOnly, setUniqueOnly] = useState(true)
+  const [extractCopied, setExtractCopied] = useState(false)
 
-  const run = () => {
-    let parsed: unknown
+  const parseInput = (): unknown | null => {
     try {
-      parsed = JSON.parse(input)
+      const parsed = JSON.parse(input)
+      setError('')
+      return parsed
     } catch {
       setError(ui.invalidJson)
       setRoot(null)
       setMatches([])
-      return
+      return null
     }
+  }
+
+  const analyzeJson = () => {
+    const parsed = parseInput()
+    if (parsed === null) return
+    setRoot(parsed)
+  }
+
+  const run = () => {
+    const parsed = parseInput()
+    if (parsed === null) return
     try {
       const parsedJson = parsed as string | number | boolean | null | Record<string, unknown> | unknown[]
       const raw = JSONPath({
@@ -448,7 +656,7 @@ function JsonPathExplorerTab() {
         json: parsedJson,
         resultType: 'all',
         wrap: true,
-      }) as unknown as Array<{ path: string | string[]; value: unknown }>
+      }) as unknown as Array<{ path: string | Array<string | number>; value: unknown }>
       const nextMatches = raw.map((m) => ({
         path: normalizeJsonPath(m.path),
         value: m.value,
@@ -476,6 +684,160 @@ function JsonPathExplorerTab() {
       value: previewValue(m.value),
     }))
     downloadFile(Papa.unparse(rows), 'jsonpath-results.csv', 'text/csv')
+  }
+
+  const candidateSources = useMemo<DynamicCandidate[]>(() => {
+    if (root === null) return []
+    const locale = lang === 'hu' ? 'hu' : 'en'
+    return collectDynamicCandidates(root)
+      .sort((a, b) => a.path.localeCompare(b.path, locale, { sensitivity: 'base' }))
+  }, [root, lang])
+
+  const filteredSources = useMemo(() => {
+    const q = fieldFilter.trim().toLowerCase()
+    if (!q) return candidateSources
+    return candidateSources.filter((source) =>
+      source.path.toLowerCase().includes(q) || source.label.toLowerCase().includes(q)
+    )
+  }, [candidateSources, fieldFilter])
+
+  useEffect(() => {
+    if (candidateSources.length === 0) {
+      setSelectedCandidatePath('')
+      setExpandKey('__none__')
+      return
+    }
+    if (!candidateSources.some((source) => source.path === selectedCandidatePath)) {
+      setSelectedCandidatePath(candidateSources[0].path)
+    }
+  }, [candidateSources, selectedCandidatePath])
+
+  const selectedSource = useMemo(
+    () => candidateSources.find((source) => source.path === selectedCandidatePath) ?? null,
+    [candidateSources, selectedCandidatePath]
+  )
+
+  useEffect(() => {
+    if (!selectedSource) {
+      setExpandKey('__none__')
+      return
+    }
+    if (expandKey !== '__none__' && !selectedSource.expandableKeys.includes(expandKey)) {
+      setExpandKey('__none__')
+    }
+  }, [selectedSource, expandKey])
+
+  const workingRows = useMemo(() => {
+    if (!selectedSource) return []
+    return expandCandidateRows(selectedSource, expandKey)
+  }, [selectedSource, expandKey])
+
+  const availableFields = useMemo(() => {
+    const locale = lang === 'hu' ? 'hu' : 'en'
+    return Array.from(new Set(workingRows.flatMap((row) => Object.keys(row))))
+      .sort((a, b) => a.localeCompare(b, locale, { sensitivity: 'base' }))
+  }, [workingRows, lang])
+
+  useEffect(() => {
+    if (availableFields.length === 0) {
+      setLabelKey('')
+      setValueKey('')
+      return
+    }
+    if (!availableFields.includes(labelKey)) {
+      const fallback = availableFields.find((key) => /label|name|title/i.test(key)) ?? availableFields[0]
+      setLabelKey(fallback)
+    }
+    if (!availableFields.includes(valueKey)) {
+      const fallback = availableFields.find((key) => /value|id|slug|code/i.test(key)) ?? availableFields[0]
+      setValueKey(fallback)
+    }
+  }, [availableFields, labelKey, valueKey])
+
+  useEffect(() => {
+    setFilters((prev) =>
+      prev.map((row) => (row.key && !availableFields.includes(row.key) ? { ...row, key: '' } : row))
+    )
+  }, [availableFields])
+
+  const filteredRows = useMemo(() => {
+    const activeFilters = filters.filter((row) => row.key && row.value.trim())
+    if (activeFilters.length === 0) return workingRows
+    return workingRows.filter((row) =>
+      activeFilters.every((filterRow) => {
+        const target = String(row[filterRow.key] ?? '').toLowerCase()
+        const term = filterRow.value.trim().toLowerCase()
+        if (!term) return true
+        if (filterRow.operator === 'equals') return target === term
+        return target.includes(term)
+      })
+    )
+  }, [workingRows, filters])
+
+  const pairs = useMemo<LabelValuePair[]>(() => {
+    if (!labelKey || !valueKey) return []
+    const rawPairs = filteredRows
+      .map((row) => ({
+        label: String(row[labelKey] ?? '').trim(),
+        value: String(row[valueKey] ?? '').trim(),
+      }))
+      .filter((pair) => pair.label || pair.value)
+    if (!uniqueOnly) return rawPairs
+    const seen = new Set<string>()
+    return rawPairs.filter((pair) => {
+      const key = `${pair.label}\u0000${pair.value}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }, [filteredRows, labelKey, valueKey, uniqueOnly])
+
+  const valueOnlyList = useMemo(() => {
+    const values = pairs.map((pair) => pair.value).filter(Boolean)
+    return uniqueOnly ? Array.from(new Set(values)) : values
+  }, [pairs, uniqueOnly])
+
+  const extractedOutput = useMemo(() => {
+    if (outputMode === 'pairs') {
+      return pairs.map((pair) => `label: ${pair.label} / value: ${pair.value}`).join('\n')
+    }
+    if (outputMode === 'comma') return valueOnlyList.join(', ')
+    if (outputMode === 'plain') return valueOnlyList.join('\n')
+    return JSON.stringify(pairs, null, 2)
+  }, [outputMode, pairs, valueOnlyList])
+
+  const createFilterRow = (): DynamicFilterRow => ({
+    id: `f-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    key: '',
+    operator: 'contains',
+    value: '',
+  })
+
+  const addFilter = () => {
+    setFilters((prev) => [...prev, createFilterRow()])
+  }
+
+  const updateFilter = (id: string, patch: Partial<DynamicFilterRow>) => {
+    setFilters((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)))
+  }
+
+  const removeFilter = (id: string) => {
+    setFilters((prev) => {
+      const next = prev.filter((row) => row.id !== id)
+      return next.length > 0 ? next : [createFilterRow()]
+    })
+  }
+
+  const copyExtracted = async () => {
+    if (!extractedOutput) return
+    await copyToClipboard(extractedOutput)
+    setExtractCopied(true)
+    setTimeout(() => setExtractCopied(false), 1500)
+  }
+
+  const downloadExtracted = () => {
+    if (!extractedOutput) return
+    downloadFile(extractedOutput, 'meta-field-values.txt', 'text/plain')
   }
 
   return (
@@ -509,6 +871,7 @@ function JsonPathExplorerTab() {
 
         <div className="flex flex-wrap items-center gap-2">
           <Input className="font-mono text-xs" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="$.items[*].id" />
+          <Button size="sm" variant="outline" onClick={analyzeJson}>{ui.analyze}</Button>
           <Button size="sm" onClick={run}>{ui.run}</Button>
           <Badge variant="secondary">{matches.length} {ui.matches}</Badge>
           <Button size="sm" variant="outline" onClick={copyMatches}>
@@ -519,6 +882,195 @@ function JsonPathExplorerTab() {
             <Download className="h-4 w-4" />
             {ui.downloadCsv}
           </Button>
+        </div>
+
+        <div className="space-y-3 rounded-md border p-3">
+          <div>
+            <Label>{ui.fieldExtract}</Label>
+            <p className="text-xs text-muted-foreground mt-1">{ui.fieldExtractDesc}</p>
+          </div>
+
+          {root === null ? (
+            <p className="text-xs text-muted-foreground">{ui.analyzeHint}</p>
+          ) : candidateSources.length === 0 ? (
+            <p className="text-xs text-muted-foreground">{ui.noDatasets}</p>
+          ) : (
+            <>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label>{ui.fieldSearch}</Label>
+                  <Input value={fieldFilter} onChange={(e) => setFieldFilter(e.target.value)} placeholder={ui.fieldSearchPlaceholder} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>{ui.datasetSelect}</Label>
+                  <Select value={selectedCandidatePath} onValueChange={setSelectedCandidatePath}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={ui.datasetSelectPlaceholder} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {filteredSources.map((source) => (
+                        <SelectItem key={source.path} value={source.path}>
+                          {source.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {selectedSource && <Badge variant="secondary">{selectedSource.rowCount} {ui.rowsFound}</Badge>}
+                <Badge variant="outline">{pairs.length} {ui.pairCount}</Badge>
+                <Select value={expandKey} onValueChange={setExpandKey}>
+                  <SelectTrigger className="w-[260px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">{ui.expandNone}</SelectItem>
+                    {(selectedSource?.expandableKeys ?? []).map((key) => (
+                      <SelectItem key={key} value={key}>{key}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select value={outputMode} onValueChange={(value) => setOutputMode(value as 'pairs' | 'comma' | 'plain' | 'json')}>
+                  <SelectTrigger className="w-[250px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="pairs">{ui.formatPairs}</SelectItem>
+                    <SelectItem value="comma">{ui.formatComma}</SelectItem>
+                    <SelectItem value="plain">{ui.formatPlain}</SelectItem>
+                    <SelectItem value="json">{ui.formatJson}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <Checkbox checked={uniqueOnly} onCheckedChange={(checked) => setUniqueOnly(checked === true)} />
+                  {ui.uniqueOnly}
+                </label>
+                <Button size="sm" variant="outline" onClick={copyExtracted}>
+                  {extractCopied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                  {ui.copy}
+                </Button>
+                <Button size="sm" variant="outline" onClick={downloadExtracted}>
+                  <Download className="h-4 w-4" />
+                  {ui.downloadTxt}
+                </Button>
+              </div>
+
+              {selectedSource && (
+                <p className="text-xs text-muted-foreground font-mono">{ui.datasetPath}: {selectedSource.path}</p>
+              )}
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label>{ui.labelField}</Label>
+                  <Select value={labelKey} onValueChange={setLabelKey}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={ui.labelFieldPlaceholder} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableFields.map((field) => (
+                        <SelectItem key={`label-${field}`} value={field}>{field}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>{ui.valueField}</Label>
+                  <Select value={valueKey} onValueChange={setValueKey}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={ui.valueFieldPlaceholder} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableFields.map((field) => (
+                        <SelectItem key={`value-${field}`} value={field}>{field}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="space-y-2 rounded-md border p-3">
+                <div className="flex items-center justify-between">
+                  <Label>{ui.filters}</Label>
+                  <Button size="sm" variant="outline" onClick={addFilter}>
+                    <Plus className="mr-1 h-3 w-3" />
+                    {ui.addFilter}
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {filters.map((filterRow) => (
+                    <div key={filterRow.id} className="grid gap-2 md:grid-cols-[1fr_180px_1fr_auto]">
+                      <Select value={filterRow.key} onValueChange={(value) => updateFilter(filterRow.id, { key: value })}>
+                        <SelectTrigger>
+                          <SelectValue placeholder={ui.filterFieldPlaceholder} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableFields.map((field) => (
+                            <SelectItem key={`${filterRow.id}-${field}`} value={field}>{field}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select value={filterRow.operator} onValueChange={(value) => updateFilter(filterRow.id, { operator: value as 'contains' | 'equals' })}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="contains">{ui.filterContains}</SelectItem>
+                          <SelectItem value="equals">{ui.filterEquals}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Input
+                        value={filterRow.value}
+                        onChange={(e) => updateFilter(filterRow.id, { value: e.target.value })}
+                        placeholder={ui.filterValuePlaceholder}
+                      />
+                      <Button size="sm" variant="ghost" onClick={() => removeFilter(filterRow.id)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>{ui.preview}</Label>
+                {filteredRows.length === 0 ? (
+                  <div className="rounded-md border p-2 text-xs text-muted-foreground">{ui.noRows}</div>
+                ) : (
+                  <div className="max-h-52 overflow-auto rounded-md border">
+                    <table className="w-full text-xs border-collapse">
+                      <thead>
+                        <tr className="border-b bg-muted/40">
+                          {availableFields.slice(0, 6).map((field) => (
+                            <th key={field} className="px-2 py-1.5 text-left">{field}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredRows.slice(0, 60).map((row, idx) => (
+                          <tr key={`row-${idx}`} className="border-b hover:bg-muted/30">
+                            {availableFields.slice(0, 6).map((field) => (
+                              <td key={`${idx}-${field}`} className="px-2 py-1.5 font-mono">{row[field] ?? ''}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>{ui.output}</Label>
+                {extractedOutput ? (
+                  <Textarea className="font-mono text-xs h-28" value={extractedOutput} readOnly />
+                ) : (
+                  <div className="rounded-md border p-2 text-xs text-muted-foreground">{ui.noRows}</div>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
         {error && (

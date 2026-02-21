@@ -2,6 +2,22 @@
 
 All notable changes to this project are tracked in this file.
 
+## [1.3] - 2026.02.21
+
+### Added
+
+- `Converters`:
+  - JSONPath Explorer upgraded with a dynamic JSON extractor workflow:
+    - auto-discovered record sources from uploaded JSON
+    - dynamic field-level filtering (`contains` / `equals`)
+    - selectable label/value mapping with export-ready outputs (`label: ... / value: ...`, plain, comma, JSON)
+- `Code Utils`:
+  - New `Dependency Impact` tool:
+    - analyze `package.json` + `package-lock.json` dependency graph (direct + transitive links)
+    - inspect package relations (`depends on`, `depended by`)
+    - remove-impact preview for direct dependencies
+    - interactive graph view with focus highlighting, zoom, and pan
+
 ## [1.2] - 2026.02.18
 
 ### Added

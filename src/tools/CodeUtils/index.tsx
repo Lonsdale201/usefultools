@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Copy, Check } from 'lucide-react'
+import { useMemo, useRef, useState, type ChangeEvent, type PointerEvent, type WheelEvent } from 'react'
+import { Copy, Check, Download } from 'lucide-react'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
@@ -9,7 +9,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { copyToClipboard } from '@/lib/downloadFile'
+import { copyToClipboard, downloadFile } from '@/lib/downloadFile'
 import { useI18n } from '@/lib/i18n'
 import { prettifyJSON, minifyJSON, prettifyXML, prettifyHTML, minifyHTML } from './prettify'
 import { escapeHTML, unescapeHTML, encodeURL, decodeURL } from './escape'
@@ -25,10 +25,16 @@ import {
   type PassphraseOptions,
   type PasswordOptions,
 } from './passwordGenerator'
+import {
+  analyzeDependencyGraph,
+  previewRemovalImpact,
+  type DependencyGraph,
+} from './dependencyImpact'
 
 export function CodeUtils() {
   const { t, lang } = useI18n()
   const passwordTabLabel = lang === 'hu' ? 'Jelszó Generátor' : 'Password Generator'
+  const depImpactTabLabel = lang === 'hu' ? 'F\u00fcgg\u0151s\u00e9gelemz\u00e9s' : 'Dependency Impact'
 
   return (
     <div className="space-y-4">
@@ -42,12 +48,14 @@ export function CodeUtils() {
           <TabsTrigger value="escape">{t('cu.escape')}</TabsTrigger>
           <TabsTrigger value="base64">{t('cu.base64')}</TabsTrigger>
           <TabsTrigger value="hash">{t('cu.hash')}</TabsTrigger>
+          <TabsTrigger value="dep-impact">{depImpactTabLabel}</TabsTrigger>
           <TabsTrigger value="password">{passwordTabLabel}</TabsTrigger>
         </TabsList>
         <TabsContent value="prettify"><PrettifyTab /></TabsContent>
         <TabsContent value="escape"><EscapeTab /></TabsContent>
         <TabsContent value="base64"><Base64Tab /></TabsContent>
         <TabsContent value="hash"><HashTab /></TabsContent>
+        <TabsContent value="dep-impact"><DependencyImpactTab /></TabsContent>
         <TabsContent value="password"><PasswordTab /></TabsContent>
       </Tabs>
     </div>
@@ -318,6 +326,702 @@ function HashTab() {
             </div>
             <Badge variant="secondary">{result.length * 4} bit</Badge>
           </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+interface GraphLayoutNode {
+  name: string
+  x: number
+  y: number
+  level: number
+  kind: 'focus' | 'dependency' | 'dependent'
+}
+
+interface GraphLayoutEdge {
+  from: string
+  to: string
+}
+
+interface GraphLayoutResult {
+  nodes: GraphLayoutNode[]
+  edges: GraphLayoutEdge[]
+  width: number
+  height: number
+}
+
+function buildDirectionalDistanceMap(
+  graph: DependencyGraph,
+  start: string,
+  depth: number,
+  direction: 'dependencies' | 'dependents'
+): Map<string, number> {
+  const distances = new Map<string, number>()
+  if (!start || !graph.nodes[start]) return distances
+  const queue: Array<{ name: string; distance: number }> = [{ name: start, distance: 0 }]
+  distances.set(start, 0)
+
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current) continue
+    if (current.distance >= depth) continue
+    const node = graph.nodes[current.name]
+    if (!node) continue
+    const nextNames = direction === 'dependencies' ? node.dependencies : node.dependents
+    nextNames.forEach((next) => {
+      const nextDistance = current.distance + 1
+      const known = distances.get(next)
+      if (known !== undefined && known <= nextDistance) return
+      distances.set(next, nextDistance)
+      queue.push({ name: next, distance: nextDistance })
+    })
+  }
+
+  return distances
+}
+
+function buildGraphLayout(
+  graph: DependencyGraph,
+  focusName: string,
+  depth: number,
+  maxNodes: number
+): GraphLayoutResult {
+  if (!focusName || !graph.nodes[focusName]) {
+    return { nodes: [], edges: [], width: 820, height: 380 }
+  }
+
+  const positive = buildDirectionalDistanceMap(graph, focusName, depth, 'dependencies')
+  const negative = buildDirectionalDistanceMap(graph, focusName, depth, 'dependents')
+
+  const allCandidates = new Set<string>([...positive.keys(), ...negative.keys()])
+  allCandidates.add(focusName)
+
+  const ranked = Array.from(allCandidates)
+    .map((name) => {
+      const pos = positive.get(name)
+      const neg = negative.get(name)
+      const rank = name === focusName
+        ? -1
+        : Math.min(
+            pos ?? Number.POSITIVE_INFINITY,
+            neg ?? Number.POSITIVE_INFINITY
+          )
+      return { name, pos, neg, rank }
+    })
+    .sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank
+      return a.name.localeCompare(b.name)
+    })
+
+  const capped = ranked.slice(0, Math.max(1, maxNodes))
+  const visible = new Set(capped.map((item) => item.name))
+  visible.add(focusName)
+
+  const levels = new Map<string, number>()
+  levels.set(focusName, 0)
+  capped.forEach((item) => {
+    if (item.name === focusName) return
+    const pos = item.pos
+    const neg = item.neg
+    if (pos !== undefined && (neg === undefined || pos <= neg)) levels.set(item.name, pos)
+    else if (neg !== undefined) levels.set(item.name, -neg)
+  })
+
+  const edges: GraphLayoutEdge[] = []
+  visible.forEach((name) => {
+    const node = graph.nodes[name]
+    if (!node) return
+    node.dependencies.forEach((dep) => {
+      if (visible.has(dep)) edges.push({ from: name, to: dep })
+    })
+  })
+
+  const byLevel = new Map<number, string[]>()
+  visible.forEach((name) => {
+    const level = levels.get(name) ?? 0
+    const list = byLevel.get(level) ?? []
+    list.push(name)
+    byLevel.set(level, list)
+  })
+  byLevel.forEach((list) => list.sort((a, b) => a.localeCompare(b)))
+
+  const sortedLevels = Array.from(byLevel.keys()).sort((a, b) => a - b)
+  const minLevel = sortedLevels[0] ?? 0
+  const maxLevel = sortedLevels[sortedLevels.length - 1] ?? 0
+  const maxRows = Math.max(1, ...Array.from(byLevel.values()).map((list) => list.length))
+
+  const xGap = 210
+  const yGap = 52
+  const margin = 56
+  const width = (maxLevel - minLevel) * xGap + margin * 2 + 80
+  const height = (maxRows - 1) * yGap + margin * 2 + 40
+  const centerY = margin + ((maxRows - 1) * yGap) / 2
+
+  const nodes: GraphLayoutNode[] = []
+  sortedLevels.forEach((level) => {
+    const namesAtLevel = byLevel.get(level) ?? []
+    const totalLevelHeight = (namesAtLevel.length - 1) * yGap
+    const startY = centerY - totalLevelHeight / 2
+    namesAtLevel.forEach((name, index) => {
+      const x = margin + (level - minLevel) * xGap + 40
+      const y = startY + index * yGap
+      const kind: GraphLayoutNode['kind'] = name === focusName
+        ? 'focus'
+        : level >= 0
+          ? 'dependency'
+          : 'dependent'
+      nodes.push({ name, x, y, level, kind })
+    })
+  })
+
+  return { nodes, edges, width, height }
+}
+
+function shortPackageLabel(name: string): string {
+  if (name.length <= 28) return name
+  return `${name.slice(0, 25)}...`
+}
+
+function DependencyImpactTab() {
+  const { lang } = useI18n()
+  const ui = lang === 'hu'
+    ? {
+        title: 'F\u00fcgg\u0151s\u00e9gelemz\u00e9s',
+        desc: 'package.json + package-lock.json elemz\u00e9s: melyik csomag mit h\u00faz be, \u00e9s mi t\u00f6rt\u00e9nik, ha elt\u00e1vol\u00edtasz egy csomagot.',
+        packageJson: 'package.json',
+        lockfile: 'package-lock.json',
+        upload: 'F\u00e1jl bet\u00f6lt\u00e9se',
+        analyze: 'Gr\u00e1f \u00e9p\u00edt\u00e9se',
+        clear: '\u00dcr\u00edt\u00e9s',
+        invalidInput: '\u00c9rv\u00e9nytelen bemenet.',
+        summary: '\u00d6sszegz\u00e9s',
+        nodes: 'csomag',
+        edges: 'kapcsolat',
+        direct: 'k\u00f6zvetlen f\u00fcgg\u0151s\u00e9g',
+        inspect: 'Csomagvizsg\u00e1lat',
+        search: 'Keres\u00e9s',
+        searchPlaceholder: 'pl. react',
+        packageSelect: 'Csomag',
+        dependsOn: 'F\u00fcgg\u0151s\u00e9gei',
+        dependedBy: 'F\u00fcgg t\u0151le',
+        removePreview: 'Elt\u00e1vol\u00edt\u00e1si hat\u00e1s el\u0151n\u00e9zet',
+        removeTarget: 'Elt\u00e1vol\u00edtand\u00f3 k\u00f6zvetlen csomag',
+        removed: 'elt\u0171nne',
+        retained: 'megmaradna',
+        report: 'Riport',
+        copy: 'M\u00e1sol\u00e1s',
+        download: 'Let\u00f6lt\u00e9s',
+        graphView: 'Gr\u00e1f n\u00e9zet',
+        graphDepth: 'M\u00e9lys\u00e9g',
+        graphMaxNodes: 'Max node',
+        zoomIn: 'Nagy\u00edt\u00e1s +',
+        zoomOut: 'Kicsiny\u00edt\u00e9s -',
+        zoomReset: 'Nagy\u00edt\u00e1s alaphelyzet',
+        graphFocus: 'f\u00f3kusz',
+        graphDeps: 'f\u00fcgg\u0151s\u00e9gi oldal',
+        graphDependents: 'f\u00fcgg\u0151 oldal',
+        noGraph: 'T\u00f6ltsd be a k\u00e9t f\u00e1jlt, majd futtasd az elemz\u00e9st.',
+        noNode: 'Nincs kiv\u00e1lasztott csomag.',
+      }
+    : {
+        title: 'Dependency Impact Explorer',
+        desc: 'Analyze package.json + package-lock.json: who pulls what and what happens when removing a package.',
+        packageJson: 'package.json',
+        lockfile: 'package-lock.json',
+        upload: 'Load file',
+        analyze: 'Build graph',
+        clear: 'Clear',
+        invalidInput: 'Invalid input.',
+        summary: 'Summary',
+        nodes: 'nodes',
+        edges: 'edges',
+        direct: 'direct dependencies',
+        inspect: 'Package inspect',
+        search: 'Search',
+        searchPlaceholder: 'e.g. react',
+        packageSelect: 'Package',
+        dependsOn: 'Depends on',
+        dependedBy: 'Depended by',
+        removePreview: 'Remove impact preview',
+        removeTarget: 'Direct dependency to remove',
+        removed: 'would be removed',
+        retained: 'would remain',
+        report: 'Report',
+        copy: 'Copy',
+        download: 'Download',
+        graphView: 'Graph view',
+        graphDepth: 'Depth',
+        graphMaxNodes: 'Max nodes',
+        zoomIn: 'Zoom +',
+        zoomOut: 'Zoom -',
+        zoomReset: 'Reset zoom',
+        graphFocus: 'focus',
+        graphDeps: 'dependency side',
+        graphDependents: 'dependent side',
+        noGraph: 'Load both files and run analysis.',
+        noNode: 'No selected package.',
+      }
+
+  const [packageJsonInput, setPackageJsonInput] = useState('')
+  const [lockfileInput, setLockfileInput] = useState('')
+  const [graph, setGraph] = useState<DependencyGraph | null>(null)
+  const [error, setError] = useState('')
+  const [packageSearch, setPackageSearch] = useState('')
+  const [selectedPackage, setSelectedPackage] = useState('')
+  const [removeTarget, setRemoveTarget] = useState('')
+  const [copied, setCopied] = useState(false)
+  const [graphDepth, setGraphDepth] = useState(2)
+  const [graphMaxNodes, setGraphMaxNodes] = useState(120)
+  const [graphScale, setGraphScale] = useState(1)
+  const [graphOffset, setGraphOffset] = useState({ x: 0, y: 0 })
+  const dragRef = useRef<{ active: boolean; x: number; y: number }>({ active: false, x: 0, y: 0 })
+
+  const directDependencyNames = useMemo(() => {
+    if (!graph) return []
+    return Array.from(new Set(graph.directDependencies.map((dep) => dep.name))).sort((a, b) => a.localeCompare(b))
+  }, [graph])
+
+  const filteredPackageNames = useMemo(() => {
+    if (!graph) return []
+    const query = packageSearch.trim().toLowerCase()
+    if (!query) return graph.nodeNames
+    return graph.nodeNames.filter((name) => name.toLowerCase().includes(query))
+  }, [graph, packageSearch])
+
+  const selectedNode = useMemo(() => {
+    if (!graph || !selectedPackage) return null
+    return graph.nodes[selectedPackage] ?? null
+  }, [graph, selectedPackage])
+
+  const impact = useMemo(() => {
+    if (!graph || !removeTarget) return null
+    return previewRemovalImpact(graph, removeTarget)
+  }, [graph, removeTarget])
+
+  const graphFocusName = useMemo(() => {
+    if (!graph) return ''
+    if (selectedPackage && graph.nodes[selectedPackage]) return selectedPackage
+    if (removeTarget && graph.nodes[removeTarget]) return removeTarget
+    if (graph.nodeNames.length > 0) return graph.nodeNames[0]
+    return ''
+  }, [graph, selectedPackage, removeTarget])
+
+  const graphLayout = useMemo(() => {
+    if (!graph) return { nodes: [], edges: [], width: 820, height: 380 }
+    return buildGraphLayout(graph, graphFocusName, graphDepth, graphMaxNodes)
+  }, [graph, graphFocusName, graphDepth, graphMaxNodes])
+
+  const graphNodeMap = useMemo(() => {
+    const map = new Map<string, GraphLayoutNode>()
+    graphLayout.nodes.forEach((node) => map.set(node.name, node))
+    return map
+  }, [graphLayout.nodes])
+
+  const removedSet = useMemo(() => new Set(impact?.removed ?? []), [impact])
+
+  const reportText = useMemo(() => {
+    if (!graph) return ''
+    const lines: string[] = []
+    lines.push('Dependency Impact Report')
+    lines.push(`Nodes: ${graph.nodeNames.length}`)
+    lines.push(`Edges: ${graph.edgeCount}`)
+    lines.push(`Direct dependencies: ${directDependencyNames.length}`)
+    if (selectedNode) {
+      lines.push('')
+      lines.push(`Package: ${selectedNode.name}`)
+      lines.push(`Versions: ${selectedNode.versions.join(', ') || '-'}`)
+      lines.push(`Depends on (${selectedNode.dependencies.length}): ${selectedNode.dependencies.join(', ') || '-'}`)
+      lines.push(`Depended by (${selectedNode.dependents.length}): ${selectedNode.dependents.join(', ') || '-'}`)
+    }
+    if (removeTarget && impact) {
+      lines.push('')
+      lines.push(`Remove target: ${removeTarget}`)
+      lines.push(`Would be removed (${impact.removed.length}):`)
+      impact.removed.slice(0, 300).forEach((name) => lines.push(`- ${name}`))
+      if (impact.removed.length > 300) lines.push(`... +${impact.removed.length - 300} more`)
+    }
+    return lines.join('\n')
+  }, [graph, directDependencyNames.length, selectedNode, removeTarget, impact])
+
+  const runAnalysis = () => {
+    const result = analyzeDependencyGraph(packageJsonInput, lockfileInput)
+    if (!result.graph) {
+      setGraph(null)
+      setError(result.error ?? ui.invalidInput)
+      setSelectedPackage('')
+      setRemoveTarget('')
+      return
+    }
+    setGraph(result.graph)
+    setError('')
+    const firstDirect = result.graph.directDependencies[0]?.name ?? ''
+    setSelectedPackage(firstDirect || result.graph.nodeNames[0] || '')
+    const directNames = Array.from(new Set(result.graph.directDependencies.map((dep) => dep.name)))
+    setRemoveTarget(directNames[0] ?? '')
+    setGraphScale(1)
+    setGraphOffset({ x: 0, y: 0 })
+  }
+
+  const loadFile = async (
+    event: ChangeEvent<HTMLInputElement>,
+    setter: (value: string) => void
+  ) => {
+    const input = event.currentTarget
+    const file = input.files?.[0]
+    if (!file) {
+      input.value = ''
+      return
+    }
+    const text = await file.text()
+    setter(text)
+    // Allow selecting the same file again and still trigger onChange.
+    input.value = ''
+  }
+
+  const clearAll = () => {
+    setPackageJsonInput('')
+    setLockfileInput('')
+    setGraph(null)
+    setError('')
+    setPackageSearch('')
+    setSelectedPackage('')
+    setRemoveTarget('')
+    setGraphScale(1)
+    setGraphOffset({ x: 0, y: 0 })
+  }
+
+  const copyReport = async () => {
+    if (!reportText) return
+    await copyToClipboard(reportText)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  const downloadReport = () => {
+    if (!reportText) return
+    downloadFile(reportText, 'dependency-impact-report.txt', 'text/plain')
+  }
+
+  const clampScale = (value: number) => Math.min(2.5, Math.max(0.45, value))
+
+  const zoomIn = () => setGraphScale((current) => clampScale(current + 0.12))
+  const zoomOut = () => setGraphScale((current) => clampScale(current - 0.12))
+  const resetZoom = () => {
+    setGraphScale(1)
+    setGraphOffset({ x: 0, y: 0 })
+  }
+
+  const onGraphPointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId)
+    dragRef.current = { active: true, x: event.clientX, y: event.clientY }
+  }
+
+  const onGraphPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current.active) return
+    const deltaX = event.clientX - dragRef.current.x
+    const deltaY = event.clientY - dragRef.current.y
+    dragRef.current = { active: true, x: event.clientX, y: event.clientY }
+    setGraphOffset((current) => ({ x: current.x + deltaX, y: current.y + deltaY }))
+  }
+
+  const stopGraphDrag = () => {
+    dragRef.current.active = false
+  }
+
+  const onGraphWheel = (event: WheelEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    const delta = event.deltaY < 0 ? 0.08 : -0.08
+    setGraphScale((current) => clampScale(current + delta))
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{ui.title}</CardTitle>
+        <CardDescription>{ui.desc}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <Label>{ui.packageJson}</Label>
+              <label className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                {ui.upload}
+                <Input className="hidden" type="file" accept=".json,application/json" onChange={(e) => loadFile(e, setPackageJsonInput)} />
+              </label>
+            </div>
+            <Textarea
+              className="font-mono text-xs h-44"
+              value={packageJsonInput}
+              onChange={(e) => setPackageJsonInput(e.target.value)}
+              placeholder='{"dependencies":{"react":"^19.0.0"}}'
+            />
+          </div>
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <Label>{ui.lockfile}</Label>
+              <label className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                {ui.upload}
+                <Input className="hidden" type="file" accept=".json,application/json" onChange={(e) => loadFile(e, setLockfileInput)} />
+              </label>
+            </div>
+            <Textarea
+              className="font-mono text-xs h-44"
+              value={lockfileInput}
+              onChange={(e) => setLockfileInput(e.target.value)}
+              placeholder='{"lockfileVersion":3,"packages":{"":{},"node_modules/react":{"version":"19.0.0"}}}'
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" onClick={runAnalysis}>{ui.analyze}</Button>
+          <Button size="sm" variant="outline" onClick={clearAll}>{ui.clear}</Button>
+          {graph && (
+            <>
+              <Badge variant="secondary">{graph.nodeNames.length} {ui.nodes}</Badge>
+              <Badge variant="secondary">{graph.edgeCount} {ui.edges}</Badge>
+              <Badge variant="outline">{directDependencyNames.length} {ui.direct}</Badge>
+            </>
+          )}
+        </div>
+
+        {error && (
+          <div className="rounded-md bg-destructive/10 border border-destructive/30 p-2 text-xs text-destructive">
+            {error}
+          </div>
+        )}
+
+        {!graph ? (
+          <p className="text-xs text-muted-foreground">{ui.noGraph}</p>
+        ) : (
+          <>
+            <div className="space-y-3 rounded-md border p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Label>{ui.graphView}</Label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-muted-foreground">{ui.graphDepth}</span>
+                    <Input
+                      className="h-8 w-20 text-xs"
+                      type="number"
+                      min={1}
+                      max={5}
+                      value={graphDepth}
+                      onChange={(e) => setGraphDepth(Math.min(5, Math.max(1, Number(e.target.value) || 1)))}
+                    />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-muted-foreground">{ui.graphMaxNodes}</span>
+                    <Input
+                      className="h-8 w-24 text-xs"
+                      type="number"
+                      min={25}
+                      max={400}
+                      value={graphMaxNodes}
+                      onChange={(e) => setGraphMaxNodes(Math.min(400, Math.max(25, Number(e.target.value) || 25)))}
+                    />
+                  </div>
+                  <Button size="sm" variant="outline" onClick={zoomOut}>{ui.zoomOut}</Button>
+                  <Button size="sm" variant="outline" onClick={zoomIn}>{ui.zoomIn}</Button>
+                  <Button size="sm" variant="outline" onClick={resetZoom}>{ui.zoomReset}</Button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="secondary">{ui.graphFocus}</Badge>
+                <Badge variant="outline">{ui.graphDeps}</Badge>
+                <Badge variant="outline">{ui.graphDependents}</Badge>
+                {removeTarget && impact && (
+                  <Badge variant="secondary">{impact.removed.length} {ui.removed}</Badge>
+                )}
+              </div>
+
+              <div className="overflow-hidden rounded-md border bg-muted/10">
+                <div
+                  className="h-[460px] w-full cursor-grab active:cursor-grabbing touch-none"
+                  onPointerDown={onGraphPointerDown}
+                  onPointerMove={onGraphPointerMove}
+                  onPointerUp={stopGraphDrag}
+                  onPointerLeave={stopGraphDrag}
+                  onWheel={onGraphWheel}
+                >
+                  <svg
+                    className="h-full w-full"
+                    viewBox={`0 0 ${Math.max(900, graphLayout.width)} ${Math.max(460, graphLayout.height)}`}
+                    preserveAspectRatio="xMidYMid meet"
+                  >
+                    <g transform={`translate(${graphOffset.x} ${graphOffset.y}) scale(${graphScale})`}>
+                      {graphLayout.edges.map((edge) => {
+                        const source = graphNodeMap.get(edge.from)
+                        const target = graphNodeMap.get(edge.to)
+                        if (!source || !target) return null
+                        const isFocusEdge = edge.from === graphFocusName || edge.to === graphFocusName
+                        const isRemovedEdge = removedSet.has(edge.from) || removedSet.has(edge.to)
+                        const stroke = isRemovedEdge
+                          ? '#dc2626'
+                          : isFocusEdge
+                            ? '#1d4ed8'
+                            : '#94a3b8'
+                        const opacity = isFocusEdge || isRemovedEdge ? 0.95 : 0.45
+                        return (
+                          <line
+                            key={`${edge.from}->${edge.to}`}
+                            x1={source.x}
+                            y1={source.y}
+                            x2={target.x}
+                            y2={target.y}
+                            stroke={stroke}
+                            strokeWidth={isFocusEdge ? 2 : 1.3}
+                            opacity={opacity}
+                          />
+                        )
+                      })}
+
+                      {graphLayout.nodes.map((node) => {
+                        const label = shortPackageLabel(node.name)
+                        const width = Math.max(128, Math.min(280, label.length * 7 + 26))
+                        const height = 30
+                        const isFocus = node.name === graphFocusName
+                        const isSelected = node.name === selectedPackage
+                        const isRemoved = removedSet.has(node.name)
+                        const fill = isRemoved
+                          ? '#fee2e2'
+                          : isFocus
+                            ? '#1d4ed8'
+                            : node.kind === 'dependency'
+                              ? '#eff6ff'
+                              : '#ecfdf5'
+                        const stroke = isRemoved
+                          ? '#dc2626'
+                          : isFocus
+                            ? '#1d4ed8'
+                            : node.kind === 'dependency'
+                              ? '#60a5fa'
+                              : '#34d399'
+                        const textFill = isFocus ? '#ffffff' : '#0f172a'
+
+                        return (
+                          <g
+                            key={node.name}
+                            onClick={() => setSelectedPackage(node.name)}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            <rect
+                              x={node.x - width / 2}
+                              y={node.y - height / 2}
+                              width={width}
+                              height={height}
+                              rx={8}
+                              fill={fill}
+                              stroke={stroke}
+                              strokeWidth={isSelected ? 2.5 : 1.3}
+                              opacity={isFocus || isSelected ? 1 : 0.92}
+                            />
+                            <text
+                              x={node.x}
+                              y={node.y + 4}
+                              textAnchor="middle"
+                              fontSize="11"
+                              fill={textFill}
+                              style={{ userSelect: 'none', pointerEvents: 'none', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
+                            >
+                              {label}
+                            </text>
+                          </g>
+                        )
+                      })}
+                    </g>
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2 rounded-md border p-3">
+                <Label>{ui.inspect}</Label>
+                <Input
+                  value={packageSearch}
+                  onChange={(e) => setPackageSearch(e.target.value)}
+                  placeholder={ui.searchPlaceholder}
+                />
+                <Select value={selectedPackage} onValueChange={setSelectedPackage}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={ui.packageSelect} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {filteredPackageNames.map((name) => (
+                      <SelectItem key={name} value={name}>{name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                {selectedNode ? (
+                  <div className="space-y-2 text-xs">
+                    <div>
+                      <div className="font-medium mb-1">{ui.dependsOn}: {selectedNode.dependencies.length}</div>
+                      <div className="max-h-28 overflow-auto rounded-md border p-2 font-mono">
+                        {selectedNode.dependencies.length > 0 ? selectedNode.dependencies.join('\n') : '-'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="font-medium mb-1">{ui.dependedBy}: {selectedNode.dependents.length}</div>
+                      <div className="max-h-28 overflow-auto rounded-md border p-2 font-mono">
+                        {selectedNode.dependents.length > 0 ? selectedNode.dependents.join('\n') : '-'}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">{ui.noNode}</p>
+                )}
+              </div>
+
+              <div className="space-y-2 rounded-md border p-3">
+                <Label>{ui.removePreview}</Label>
+                <Select value={removeTarget} onValueChange={setRemoveTarget}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={ui.removeTarget} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {directDependencyNames.map((name) => (
+                      <SelectItem key={name} value={name}>{name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {impact && (
+                  <div className="space-y-2 text-xs">
+                    <div className="flex gap-2">
+                      <Badge variant="secondary">{impact.removed.length} {ui.removed}</Badge>
+                      <Badge variant="outline">{impact.retained.length} {ui.retained}</Badge>
+                    </div>
+                    <div className="max-h-56 overflow-auto rounded-md border p-2 font-mono">
+                      {impact.removed.length > 0 ? impact.removed.slice(0, 250).join('\n') : '-'}
+                      {impact.removed.length > 250 ? `\n... +${impact.removed.length - 250} more` : ''}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label>{ui.report}</Label>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={copyReport}>
+                    {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                    {ui.copy}
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={downloadReport}>
+                    <Download className="h-4 w-4" />
+                    {ui.download}
+                  </Button>
+                </div>
+              </div>
+              <Textarea className="font-mono text-xs h-44" value={reportText} readOnly />
+            </div>
+          </>
         )}
       </CardContent>
     </Card>

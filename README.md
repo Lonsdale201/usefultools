@@ -265,7 +265,7 @@ Builds on push to `main` and publishes the `dist` output to GitHub Pages.
 
 ## Versioning
 
-Current version: `1.2.0`
+Current version: `1.3.0`
 
 Release notes:
 `CHANGELOG.md`
